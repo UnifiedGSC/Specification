@@ -1,0 +1,18 @@
+spec: gsc/v0.1
+kind: ServerValues
+game: satisfactory
+definitionId: gsc-examples/satisfactory
+definitionVersion: 0.1.0
+id: ficsit-coop
+fragments: []
+
+settings:
+  general:
+    serverName: "FICSIT Co-op"
+    clientPassword: { $secret: general.clientPassword }
+    maxPlayers: 8
+  saves:
+    autosaveInterval: 600
+    autoPause: false             # keep the factory running with nobody online
+  admin:
+    adminPassword: { $secret: admin.adminPassword, generate: true }

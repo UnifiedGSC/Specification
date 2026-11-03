@@ -1,0 +1,17 @@
+spec: gsc/v0.1
+kind: ServerValues
+game: arma-3
+definitionId: gsc-examples/arma3
+definitionVersion: 0.1.0
+id: arma-coop
+fragments: []
+
+settings:
+  mods:
+    list:
+      - { id: "450814997", name: CBA_A3 }
+      - { id: "463939057", name: ACE }            # requires CBA_A3, listed above   # verify ID
+      - { path: "@server_tools", side: server }   # uploaded by hand, server only
+  workshopAccount:
+    username: "pat-arma-host"
+    password: { $secret: workshopAccount.password }

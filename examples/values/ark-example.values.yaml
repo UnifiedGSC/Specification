@@ -1,0 +1,15 @@
+spec: gsc/v0.1
+kind: ServerValues
+game: ark-survival-evolved
+definitionId: gsc-examples/ark-survival-evolved
+definitionVersion: 0.1.0
+id: ark-island
+fragments: []
+
+settings:
+  progression:
+    engramPointsPerLevel: [8, 8, 8, 12, 12, 12, 16, 16, 16, 20]   # first 10 levels shown
+  items:
+    maxStackOverrides:
+      - { itemClass: PrimalItemResource_Stone_C, maxQuantity: 1000 }
+      - { itemClass: PrimalItemResource_Wood_C,  maxQuantity: 1000, ignoreMultiplier: false }

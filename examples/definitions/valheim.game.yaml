@@ -1,0 +1,467 @@
+# =============================================================================
+# Valheim — reference game definition
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Second worked example. Valheim is the opposite of CS:S: nearly everything is
+# a launch argument, there is no remote console, and world modifiers are saved
+# into the world itself. Spec features this file introduces beyond CS:S:
+#   - args targets with repeated flags, flag ordering and per-item emission
+#   - path templates with per-platform defaults that a setting can override
+#   - optionsFrom with allowCustom (pick an existing world or type a new one)
+#   - settings stored in the world (apply: worldCreate) with an in-game-only
+#     live path, and a server with no remote console at all
+#
+# Items marked `# verify` come from community documentation or memory and must
+# be checked on a live server before this is published.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/valheim
+  version: 0.1.1
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+
+game:
+  id: valheim
+  name: Valheim
+  match:                            # how a panel recognizes an install; Steam app IDs count too
+    files: [[valheim_server.x86_64, valheim_server.exe]]   # each entry must exist; a list inside means any one of them   # verify
+  engine: unity
+  steam:
+    appId: 892970            # client          # verify
+    dedicatedAppId: 896660   # SteamCMD install
+  platforms: [linux, windows]
+
+# -----------------------------------------------------------------------------
+# Paths. `saveDir` can be overridden by a setting; otherwise the platform
+# default applies. Targets below reference it as {paths.saveDir}.
+# -----------------------------------------------------------------------------
+paths:
+  saveDir:
+    setting: storage.saveDir
+    default:
+      linux: "~/.config/unity3d/IronGate/Valheim"                    # verify
+      windows: "%USERPROFILE%\\AppData\\LocalLow\\IronGate\\Valheim"
+
+# -----------------------------------------------------------------------------
+# Ports. Valheim uses the configured port and the next one up.
+# With crossplay on, the PlayFab backend relays traffic, so inbound rules are
+# not required (but do no harm).
+# -----------------------------------------------------------------------------
+ports:
+  game:
+    purpose: game
+    protocol: udp
+    default: 2456
+    setting: network.port
+    exposure: public
+    inboundOptionalWhen: "self.network.crossplay"
+
+  query:
+    purpose: query
+    protocol: udp
+    offset: { from: game, by: 1 }   # always game + 1, not separately configurable
+    exposure: public
+    inboundOptionalWhen: "self.network.crossplay"
+    speaks: [steam-a2s]             # verify
+
+# No `console` block: Valheim has no RCON or other remote console.
+# Admin commands exist only in the in-game F5 console of a player listed in
+# adminlist.txt, so an adapter cannot apply anything live.
+console: none
+
+# -----------------------------------------------------------------------------
+# Targets
+# -----------------------------------------------------------------------------
+targets:
+  commandLine:
+    type: args
+    # valheim_server -nographics -batchmode -name "My server" -port 2456
+    #   -world "Dedicated" -password "secret" -preset hard -modifier raids none
+    fixed: ["-nographics", "-batchmode"]
+    booleans: ["1", "0"]
+    order: ["-preset"]              # -preset must come first: it overwrites earlier -modifier flags
+
+  adminList:
+    type: file
+    path: "{paths.saveDir}/adminlist.txt"
+    format: lines
+    comments: "//"                  # verify
+
+  bannedList:
+    type: file
+    path: "{paths.saveDir}/bannedlist.txt"
+    format: lines
+    comments: "//"                  # verify
+
+  # Some changes can only be made by a person in the game. GSC cannot make
+  # them, but it can say exactly what to do and track that they are pending.
+  inGameAdmin:
+    type: manual
+    channel: "In-game F5 console, as a player listed in adminlist.txt"
+    verify: none                    # no remote way to read world modifiers back
+
+  permittedList:
+    type: file
+    path: "{paths.saveDir}/permittedlist.txt"
+    format: lines
+    comments: "//"                  # verify
+
+# -----------------------------------------------------------------------------
+# Dynamic option sources
+# -----------------------------------------------------------------------------
+sources:
+  worlds:
+    kind: directories               # Valheim 1.0+: one folder per world
+    glob: "{paths.saveDir}/worlds_local/*/"
+    value: "{name}"
+    legacy:                         # pre-1.0 worlds, converted on first open
+      kind: files
+      glob: "{paths.saveDir}/worlds_local/*.fwl"
+      value: "{stem}"
+
+# -----------------------------------------------------------------------------
+# Settings (JSON Schema)
+# -----------------------------------------------------------------------------
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    general:
+      title: General
+      type: object
+      properties:
+        name:
+          title: Server name
+          type: string
+          minLength: 1
+          default: "My Valheim Server"
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-name" }
+
+        password:
+          title: Join password
+          description: >-
+            At least 5 characters on a public server, and it must not appear
+            inside the world name. A bad password makes the server exit at boot.
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-password", skipIfEmpty: true }
+
+        public:
+          title: List in server browser
+          description: Off means players join by address only.
+          type: boolean
+          default: true
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-public" }
+
+    network:
+      title: Network
+      type: object
+      properties:
+        port:
+          title: Game port
+          description: The server also uses the next port up for queries.
+          type: integer
+          minimum: 1024
+          maximum: 65534                    # leaves room for port + 1
+          default: 2456
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-port" }
+
+        crossplay:
+          title: Crossplay
+          description: >-
+            Uses the PlayFab backend so non-Steam players can join with a join
+            code. Port forwarding is not required. Player IDs change format.
+          type: boolean
+          default: false
+          apply: restart
+          write:
+            - { target: commandLine, flag: "-crossplay" }   # presence-only flag, no value
+
+        instanceId:
+          title: Instance ID
+          description: Distinguishes several servers sharing one address.
+          type: string
+          default: ""
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-instanceid", skipIfEmpty: true }
+
+    world:
+      title: World
+      type: object
+      properties:
+        name:
+          title: World
+          description: Pick an existing world, or type a new name to generate one.
+          type: string
+          minLength: 1
+          pattern: '^[^/\\:*?"<>|]+$'       # used as a folder name
+          optionsFrom: worlds
+          allowCustom: true
+          default: Dedicated
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-world" }
+
+        preset:
+          title: Difficulty preset
+          description: Applied before individual modifiers, which then adjust it.
+          type: string
+          oneOf:
+            - { const: normal,    title: Normal }
+            - { const: casual,    title: Casual }
+            - { const: easy,      title: Easy }
+            - { const: hard,      title: Hard }
+            - { const: hardcore,  title: Hardcore }
+            - { const: immersive, title: Immersive }
+            - { const: hammer,    title: Hammer }
+          default: normal
+          apply: worldCreate
+          storedIn: world
+          write:
+            - { target: commandLine, arg: "-preset", skipIfDefault: true }
+
+        modifiers:
+          title: World modifiers
+          description: >-
+            Saved into the world with boss progress. Launch arguments set them
+            for a new world; whether they override an existing world's stored
+            values is unconfirmed.   # verify
+          type: object
+          apply: worldCreate
+          storedIn: world
+          # One flag pair per property: -modifier <key> <value>.
+          # "normal" is the absence of a modifier, so it is never emitted.
+          write:
+            - target: commandLine
+              arg: "-modifier"
+              each: "{key} {value}"
+              skipValue: normal
+            # For a world that already exists, launch arguments may not change
+            # its stored modifiers (unconfirmed), so the change becomes a manual task.
+            - target: inGameAdmin
+              when: "inventory.worlds.exists(w, w == self.world.name)"
+              each: "{key} {value}"
+              skipValue: normal
+              instructions: |
+                Join the server as an admin listed in adminlist.txt, press F5, and run:
+                  setworldmodifier {key} {value}
+                Setting a modifier back to normal does not work. To undo one, run
+                setworldpreset default first, then set the modifiers you want again.
+          properties:
+            combat:
+              title: Combat
+              type: string
+              enum: [veryeasy, easy, normal, hard, veryhard]
+              default: normal
+            deathpenalty:
+              title: Death penalty
+              type: string
+              enum: [casual, veryeasy, easy, normal, hard, hardcore]
+              default: normal
+            resources:
+              title: Resource rate
+              type: string
+              enum: [muchless, less, normal, more, muchmore, most]
+              default: normal
+            raids:
+              title: Raids
+              description: '"none" does not stop night attacks.'
+              type: string
+              enum: [none, muchless, less, normal, more, muchmore]
+              default: normal
+            portals:
+              title: Portals
+              type: string
+              enum: [casual, normal, hard, veryhard]
+              default: normal
+
+        keys:
+          title: World keys
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            oneOf:
+              - { const: nobuildcost,  title: "No build cost" }
+              - { const: playerevents, title: "Raids scale per player" }
+              - { const: passivemobs,  title: "Passive enemies" }
+              - { const: nomap,        title: "No map" }
+          ui: { widget: checkboxes }
+          default: []
+          apply: worldCreate
+          storedIn: world
+          write:
+            - target: commandLine
+              arg: "-setkey"
+              each: "{item}"              # one -setkey per selected key
+          # No manual path: the in-game setkey command is a cheat command that does
+          # not work on dedicated servers.
+
+    saves:
+      title: Saving and backups
+      type: object
+      properties:
+        saveInterval:
+          title: Save interval
+          type: integer
+          minimum: 60
+          default: 1800
+          ui: { unit: seconds }
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-saveinterval" }
+
+        backups:
+          title: Backups kept
+          type: integer
+          minimum: 0
+          default: 4
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-backups" }
+
+        backupShort:
+          title: First backup after
+          type: integer
+          minimum: 60
+          default: 7200
+          ui: { unit: seconds }
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-backupshort" }
+
+        backupLong:
+          title: Later backups every
+          type: integer
+          minimum: 60
+          default: 43200
+          ui: { unit: seconds }
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-backuplong" }
+
+    storage:
+      title: Storage
+      type: object
+      properties:
+        saveDir:
+          title: Save directory
+          description: Where worlds and permission files live. Empty uses the platform default.
+          type: string
+          default: ""
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-savedir", skipIfEmpty: true }
+
+        logFile:
+          title: Log file
+          type: string
+          default: ""
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-logFile", skipIfEmpty: true }
+
+    access:
+      title: Access
+      type: object
+      properties:
+        admins:
+          title: Admins
+          description: Can use F5 console commands in game.
+          kind: identityList
+          type: array
+          items: { $ref: "#/$defs/playerId" }
+          default: []
+          apply: restart
+          write:
+            - { target: adminList, line: "{id}" }
+
+        banned:
+          title: Banned players
+          kind: identityList
+          type: array
+          items: { $ref: "#/$defs/playerId" }
+          default: []
+          apply: restart
+          write:
+            - { target: bannedList, line: "{id}" }
+
+        permitted:
+          title: Whitelist
+          description: Any entry blocks everyone who is not listed.
+          kind: identityList
+          type: array
+          items: { $ref: "#/$defs/playerId" }
+          default: []
+          apply: restart
+          write:
+            - { target: permittedList, line: "{id}" }
+
+  $defs:
+    playerId:
+      type: object
+      required: [id]
+      properties:
+        id:
+          title: Player ID
+          description: Platform-prefixed and case-sensitive, e.g. Steam_76561197960287930. Copy it from the F2 panel or the join log.
+          type: string
+          pattern: '^(Steam_\d{17}|V_\w+|[A-Za-z]+_\w+)$'   # verify V_ and other platform forms
+        note:
+          type: string                                     # stored by GSC only
+
+# -----------------------------------------------------------------------------
+# Cross-field rules (CEL)
+# -----------------------------------------------------------------------------
+rules:
+  - rule: "!self.general.public || self.general.password == '' || size(self.general.password) >= 5"
+    message: "A public server's password needs at least 5 characters."
+  - rule: "self.general.password == '' || !self.world.name.contains(self.general.password)"
+    message: "The password must not appear inside the world name, or the server exits at boot."
+  - rule: "self.general.password != '' || size(self.access.permitted) > 0 || !self.general.public"
+    message: "This public server has no password and no whitelist: anyone can join."
+    severity: warning
+
+# -----------------------------------------------------------------------------
+# Import: launch arguments are the only source of most settings; the three
+# list files hold the identity lists.
+# -----------------------------------------------------------------------------
+import:
+  precedence: [commandLine, adminList, bannedList, permittedList]
+
+# -----------------------------------------------------------------------------
+# Live state (gsc-state/v0.1). No console, so players come from A2S and the log.
+# -----------------------------------------------------------------------------
+state:
+  ready:
+    any:
+      - { log: 'Game server connected' }            # verify
+      - { query: steam-a2s }
+  queries:
+    - { protocol: steam-a2s, port: query, every: 15s, requests: [info, players] }
+  logs:
+    source: { stdout: true }
+    events:
+      player.joined: 'Got character ZDOID from (?<name>.+) : -?\d+:\d+'
+      player.connecting: 'Got connection SteamID (?<steam>\d{17})'
+      player.left:   'Closing socket (?<steam>\d{17})'
+      players.count: 'Connections (?<online>\d+) ZDOS:'   # verify
+      world.saved:   'World saved \( (?<ms>[\d.]+)ms \)'   # verify
+  reports:
+    general.name: { from: steam-a2s, field: info.name }

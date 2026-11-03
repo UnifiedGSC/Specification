@@ -1,0 +1,11 @@
+# Dependencies and build output
+node_modules/
+build/
+.docusaurus/
+.cache-loader/
+
+# Generated from examples/definitions on every build
+games/
+
+.DS_Store
+npm-debug.log*

@@ -1,0 +1,737 @@
+# =============================================================================
+# Counter-Strike: Source — reference game definition
+# Game Server Config Standard (GSC), draft v0.1
+#
+# This file is the first worked example used to test the spec. It is YAML 1.2.
+# The `settings` block is a JSON Schema (2020-12) document with a small GSC
+# vocabulary added: apply, write, optionsFrom, kind, ui.
+#
+# Items marked `# verify` come from community documentation or memory and must
+# be checked against a live server (e.g. `cvarlist`) before this is published.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/counter-strike-source
+  version: 0.1.1
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+
+game:
+  id: counter-strike-source
+  name: "Counter-Strike: Source"
+  match:                            # how a panel recognizes an install; Steam app IDs count too
+    files: [cstrike/gameinfo.txt, [srcds_run, srcds.exe]]   # each entry must exist; a list inside means any one of them   # verify
+  engine: source-1
+  steam:
+    appId: 240              # client app; GSLT tokens are issued against this
+    dedicatedAppId: 232330  # SteamCMD install
+  platforms: [linux, windows]
+  versions:
+    scheme: steamBuild               # integer Steam build IDs; a newer build is larger
+    detect:
+      - via: steamAppManifest        # written by SteamCMD next to every install
+        path: "{installDir}/steamapps/appmanifest_232330.acf"
+        field: AppState.buildid
+  # All file paths below are relative to the server install directory.
+
+# -----------------------------------------------------------------------------
+# Ports: descriptive metadata. Panels allocate; this says what each port is.
+# -----------------------------------------------------------------------------
+ports:
+  game:
+    purpose: game
+    protocol: udp
+    default: 27015
+    setting: network.port
+    exposure: public
+    speaks: [steam-a2s]           # server queries are answered on the game port
+
+  rcon:
+    purpose: rcon
+    protocol: tcp
+    sameAs: game                  # same number as the game port, over TCP
+    when: "self.admin.rconPassword != ''"
+    exposure: private
+    speaks: [source-rcon]
+
+  sourcetv:
+    purpose: spectator
+    protocol: udp
+    default: 27020
+    setting: sourcetv.port
+    when: "self.sourcetv.enabled"
+    exposure: public
+
+  client:
+    purpose: outbound             # local port the server uses for outgoing client traffic
+    protocol: udp
+    default: 27005
+    setting: network.clientPort
+    exposure: none                # needs no inbound rule
+
+# -----------------------------------------------------------------------------
+# Console: how to send commands to a running server. Used by `console` writes
+# below, and referenced by the live-state spec.
+# -----------------------------------------------------------------------------
+console:
+  protocol: source-rcon
+  port: rcon
+  password: admin.rconPassword
+
+# -----------------------------------------------------------------------------
+# Targets: where values are written. Each setting's `write` list points here.
+# -----------------------------------------------------------------------------
+# Raw passthrough: values documents may set cvars and arguments this file does
+# not model. Names that are modeled are refused automatically; these are
+# other names for modeled settings, and commands no values document may send.
+raw:
+  aliases:
+    hostport: network.port         # the cvar behind -port
+    hostip: network.ip             # verify
+  deny: [quit, exit, _restart, killserver, plugin_load, rcon]
+
+targets:
+  commandLine:
+    type: args
+    # srcds_run -game cstrike -port 27015 +maxplayers 24 +map de_dust2
+    fixed: ["-game", "cstrike", "-console", "-usercon"]
+    setsCvars: "+"                # any +name value on the command line sets a cvar
+    booleans: ["1", "0"]
+
+  serverCfg:
+    type: file
+    path: cstrike/cfg/server.cfg
+    format: source-cfg            # lines of: name "value"   // comments preserved
+    booleans: ["1", "0"]
+    executes: onMapLoad           # so file-only changes take effect next map
+
+  mapcycle:
+    type: file
+    path: cstrike/cfg/mapcycle.txt   # named by the mapcyclefile convar
+    format: lines
+
+  motd:
+    type: file
+    path: cstrike/motd.txt        # verify
+    format: text
+
+  bannedIds:
+    type: file
+    path: cstrike/cfg/banned_user.cfg   # verify
+    format: source-cfg
+    owner: game                   # rewritten by the server on `writeid`
+
+  bannedIps:
+    type: file
+    path: cstrike/cfg/banned_ip.cfg     # verify
+    format: source-cfg
+    owner: game                   # rewritten by the server on `writeip`
+
+  console:
+    type: console                 # live commands over `console` above
+    booleans: ["1", "0"]
+
+# -----------------------------------------------------------------------------
+# Dynamic option sources
+# -----------------------------------------------------------------------------
+sources:
+  installedMaps:
+    kind: files
+    glob: "cstrike/maps/*.bsp"
+    value: "{stem}"               # de_dust2.bsp -> de_dust2
+
+# -----------------------------------------------------------------------------
+# Scopes: settings that may differ per map or map prefix.
+#
+# Source re-executes server.cfg on every map start, so a per-map value does not
+# leak into the next map as long as server.cfg sets that setting explicitly
+# (persistence: reset). Stock CS:S has no per-map config file, so overrides are
+# applied by the GSC agent: when the live-state spec reports a map start, the
+# agent sends the effective values over RCON after server.cfg has run.
+# A SourceMod map-config plugin could supply a file-based alternative as a
+# fragment.   # verify per-map exec behavior on a live server
+# -----------------------------------------------------------------------------
+scopes:
+  kinds:
+    mapPrefix:
+      title: Maps starting with
+      match: prefix                 # "aim_" matches aim_map, aim_deagle
+    map:
+      title: Map
+      match: exact
+      optionsFrom: installedMaps
+  precedence: [mapPrefix, map]      # later kinds win
+  persistence: reset                # the base layer is re-applied every map
+  realize:
+    - via: console
+      on: mapStart                  # event from the live-state spec
+      after: serverCfg
+
+# -----------------------------------------------------------------------------
+# Settings (JSON Schema). Top-level properties are UI groups.
+#
+# apply:  live | nextRound | nextMap | restart | worldCreate
+# write:  every target the value goes to. Persistent targets (files, args) are
+#         always written; `console` is sent only while the server is running.
+# -----------------------------------------------------------------------------
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    general:
+      title: General
+      type: object
+      properties:
+        hostname:
+          title: Server name
+          type: string
+          maxLength: 63                     # verify
+          pattern: '^[^"]*$'                # source-cfg values cannot contain a double quote
+          default: "Counter-Strike: Source Server"
+          apply: live
+          write:
+            - { target: serverCfg, key: hostname }
+            - { target: console,   key: hostname }
+
+        password:
+          title: Join password
+          description: Leave empty for a public server.
+          type: string
+          writeOnly: true
+          pattern: '^[^"]*$'
+          default: ""
+          apply: live
+          write:
+            - { target: serverCfg, key: sv_password }
+            - { target: console,   key: sv_password }
+
+        maxPlayers:
+          title: Max players
+          classes: [resource]
+          type: integer
+          minimum: 2
+          maximum: 64                       # verify
+          default: 24
+          apply: restart
+          write:
+            - { target: commandLine, arg: "+maxplayers" }
+
+        region:
+          title: Region
+          description: Region reported to the server browser. Largely cosmetic today.
+          type: integer
+          oneOf:
+            - { const: 0,   title: US East }
+            - { const: 1,   title: US West }
+            - { const: 2,   title: South America }
+            - { const: 3,   title: Europe }
+            - { const: 4,   title: Asia }
+            - { const: 5,   title: Australia }
+            - { const: 6,   title: Middle East }
+            - { const: 7,   title: Africa }
+            - { const: 255, title: World }
+          default: 255
+          apply: live
+          write:
+            - { target: serverCfg, key: sv_region }
+            - { target: console,   key: sv_region }
+
+    network:
+      title: Network
+      type: object
+      properties:
+        ip:
+          title: Bind address
+          type: string
+          format: ipv4
+          default: "0.0.0.0"
+          apply: restart
+          write:
+            - { target: commandLine, arg: "+ip" }
+
+        port:
+          title: Game port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 27015
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-port" }
+
+        clientPort:
+          title: Client port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 27005
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-clientport" }
+
+        steamToken:
+          title: Steam game server login token (GSLT)
+          description: Required for the server to appear publicly. Issued for app 240.
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write:
+            - { target: commandLine, arg: "+sv_setsteamaccount", skipIfEmpty: true }
+
+    maps:
+      title: Maps
+      type: object
+      scopes: []                    # the rotation cannot vary by map
+      properties:
+        startMap:
+          title: Starting map
+          type: string
+          optionsFrom: installedMaps
+          default: de_dust2
+          apply: restart
+          write:
+            - { target: commandLine, arg: "+map" }
+
+        rotation:
+          title: Map rotation
+          type: array
+          minItems: 1
+          items:
+            type: string
+            optionsFrom: installedMaps
+          ui: { widget: orderedList }
+          default: [de_dust2, de_inferno, de_nuke, cs_office, de_aztec, cs_italy]
+          apply: nextMap
+          write:
+            - { target: mapcycle }          # one entry per line
+
+    rules:
+      title: Match rules
+      type: object
+      properties:
+        timeLimit:
+          title: Time limit per map
+          type: integer
+          minimum: 0
+          default: 30
+          ui: { unit: minutes, zeroMeans: "No limit" }
+          apply: live
+          write:
+            - { target: serverCfg, key: mp_timelimit }
+            - { target: console,   key: mp_timelimit }
+
+        maxRounds:
+          title: Max rounds per map
+          type: integer
+          minimum: 0
+          default: 0
+          ui: { zeroMeans: "No limit" }
+          apply: live
+          write:
+            - { target: serverCfg, key: mp_maxrounds }
+            - { target: console,   key: mp_maxrounds }
+
+        winLimit:
+          title: Win limit
+          type: integer
+          minimum: 0
+          default: 0
+          ui: { zeroMeans: "No limit" }
+          apply: live
+          write:
+            - { target: serverCfg, key: mp_winlimit }
+            - { target: console,   key: mp_winlimit }
+
+        roundTime:
+          title: Round time
+          type: number
+          minimum: 1                        # verify
+          maximum: 9                        # verify
+          default: 2.5
+          ui: { unit: minutes }
+          apply: nextRound
+          write:
+            - { target: serverCfg, key: mp_roundtime }
+            - { target: console,   key: mp_roundtime }
+
+        freezeTime:
+          title: Freeze time
+          type: integer
+          minimum: 0
+          maximum: 60                       # verify
+          default: 6
+          ui: { unit: seconds }
+          apply: nextRound
+          write:
+            - { target: serverCfg, key: mp_freezetime }
+            - { target: console,   key: mp_freezetime }
+
+        buyTime:
+          title: Buy time
+          description: In CS:S this is minutes, unlike CS:GO and CS2 (seconds).
+          type: number
+          minimum: 0.25
+          default: 1.5                      # verify
+          ui: { unit: minutes }
+          apply: nextRound
+          write:
+            - { target: serverCfg, key: mp_buytime }
+            - { target: console,   key: mp_buytime }
+
+        startMoney:
+          title: Start money
+          type: integer
+          minimum: 800
+          maximum: 16000
+          default: 800
+          ui: { unit: "$" }
+          apply: nextRound
+          write:
+            - { target: serverCfg, key: mp_startmoney }
+            - { target: console,   key: mp_startmoney }
+
+        c4Timer:
+          title: C4 timer
+          type: integer
+          minimum: 10                       # verify
+          maximum: 90                       # verify
+          default: 45
+          ui: { unit: seconds }
+          apply: nextRound
+          write:
+            - { target: serverCfg, key: mp_c4timer }
+            - { target: console,   key: mp_c4timer }
+
+        friendlyFire:
+          title: Friendly fire
+          type: boolean
+          default: false
+          apply: live
+          write:
+            - { target: serverCfg, key: mp_friendlyfire }
+            - { target: console,   key: mp_friendlyfire }
+
+        autoTeamBalance:
+          title: Auto team balance
+          type: boolean
+          default: true
+          apply: nextRound
+          write:
+            - { target: serverCfg, key: mp_autoteambalance }
+            - { target: console,   key: mp_autoteambalance }
+
+        limitTeams:
+          title: Max team size difference
+          type: integer
+          minimum: 0
+          default: 2
+          ui: { zeroMeans: "No limit" }
+          apply: live
+          write:
+            - { target: serverCfg, key: mp_limitteams }
+            - { target: console,   key: mp_limitteams }
+
+        allTalk:
+          title: All talk
+          description: Players can hear the opposing team over voice.
+          type: boolean
+          default: false
+          apply: live
+          write:
+            - { target: serverCfg, key: sv_alltalk }
+            - { target: console,   key: sv_alltalk }
+
+    bots:
+      title: Bots
+      type: object
+      properties:
+        quota:
+          title: Bot count
+          classes: [resource]
+          type: integer
+          minimum: 0
+          default: 0
+          apply: live
+          write:
+            - { target: serverCfg, key: bot_quota }
+            - { target: console,   key: bot_quota }
+
+        quotaMode:
+          title: Bot count mode
+          type: string
+          oneOf:
+            - { const: normal, title: "Fixed number of bots" }
+            - { const: fill,   title: "Fill to this many players" }
+            # verify whether CS:S also accepts `match`
+          default: normal
+          apply: live
+          write:
+            - { target: serverCfg, key: bot_quota_mode }
+            - { target: console,   key: bot_quota_mode }
+
+        difficulty:
+          title: Bot difficulty
+          type: integer
+          oneOf:
+            - { const: 0, title: Easy }
+            - { const: 1, title: Normal }
+            - { const: 2, title: Hard }
+            - { const: 3, title: Expert }
+          default: 1
+          apply: live          # applies to bots added after the change
+          write:
+            - { target: serverCfg, key: bot_difficulty }
+            - { target: console,   key: bot_difficulty }
+
+        joinAfterPlayer:
+          title: Wait for a human before adding bots
+          type: boolean
+          default: true
+          apply: live
+          write:
+            - { target: serverCfg, key: bot_join_after_player }
+            - { target: console,   key: bot_join_after_player }
+
+        deferToHuman:
+          title: Bots defer objectives to humans
+          type: boolean
+          default: true
+          apply: live
+          write:
+            - { target: serverCfg, key: bot_defer_to_human }
+            - { target: console,   key: bot_defer_to_human }
+
+        chatter:
+          title: Bot voice chatter
+          type: string
+          oneOf:
+            - { const: "off",     title: "Off" }   # quoted: YAML 1.1 parsers read off as false
+            - { const: radio,     title: "Radio only" }
+            - { const: minimal,   title: Minimal }
+            - { const: normal,    title: Normal }
+          default: normal
+          apply: live
+          write:
+            - { target: serverCfg, key: bot_chatter }
+            - { target: console,   key: bot_chatter }
+
+    sourcetv:
+      title: SourceTV
+      type: object
+      properties:
+        enabled:
+          title: Enable SourceTV
+          classes: [resource]
+          description: SourceTV occupies one player slot.   # verify
+          type: boolean
+          default: false
+          apply: nextMap
+          write:
+            - { target: serverCfg, key: tv_enable }
+
+        port:
+          title: SourceTV port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 27020
+          apply: restart
+          write:
+            - { target: commandLine, arg: "+tv_port" }
+
+        name:
+          title: SourceTV name
+          type: string
+          pattern: '^[^"]*$'
+          default: SourceTV
+          apply: nextMap
+          write:
+            - { target: serverCfg, key: tv_name }
+
+        delay:
+          title: Broadcast delay
+          type: integer
+          minimum: 0
+          default: 30
+          ui: { unit: seconds }
+          apply: nextMap
+          write:
+            - { target: serverCfg, key: tv_delay }
+
+    admin:
+      title: Administration
+      type: object
+      scopes: []                    # credentials and bans are server-wide
+      properties:
+        rconPassword:
+          title: RCON password
+          description: Empty disables RCON. Anyone holding it has full control of the server.
+          type: string
+          writeOnly: true
+          pattern: '^[^"]*$'
+          default: ""
+          apply: live
+          # Changing this over RCON changes the credential the adapter itself uses:
+          # the adapter must reconnect with the new value after sending it.
+          reconnectsConsole: true
+          write:
+            - { target: serverCfg, key: rcon_password }
+            - { target: console,   key: rcon_password }
+
+        bannedIds:
+          title: Banned Steam IDs
+          kind: identityList
+          type: array
+          items:
+            type: object
+            required: [id]
+            properties:
+              id:   { type: string, format: steamid2 }   # STEAM_0:1:12345
+              note: { type: string }                      # stored by GSC only
+          default: []
+          apply: live
+          write:
+            - target: bannedIds
+              line: "banid 0 {id}"
+            - target: console
+              add:    ["banid 0 {id}", "writeid"]
+              remove: ["removeid {id}", "writeid"]
+
+        bannedIps:
+          title: Banned IP addresses
+          kind: identityList
+          type: array
+          items:
+            type: object
+            required: [ip]
+            properties:
+              ip:   { type: string, format: ipv4 }
+              note: { type: string }
+          default: []
+          apply: live
+          write:
+            - target: bannedIps
+              line: "addip 0 {ip}"
+            - target: console
+              add:    ["addip 0 {ip}", "writeip"]
+              remove: ["removeip {ip}", "writeip"]
+
+    content:
+      title: Content
+      type: object
+      properties:
+        pure:
+          title: Pure server
+          description: Forces clients to use content matching the server. Blocks custom models and sounds.
+          type: integer
+          oneOf:
+            - { const: 0, title: "Off" }
+            - { const: 1, title: "On (whitelist, CRC check on first load)" }
+            - { const: 2, title: "On (strict, no CRC pause)" }
+          default: 2
+          apply: nextMap
+          write:
+            - { target: serverCfg, key: sv_pure }
+
+        downloadUrl:
+          title: FastDL URL
+          type: string
+          format: uri
+          default: ""
+          apply: live
+          write:
+            - { target: serverCfg, key: sv_downloadurl }
+            - { target: console,   key: sv_downloadurl }
+
+        allowDownload:
+          title: Allow clients to download content
+          type: boolean
+          default: true
+          apply: live
+          write:
+            - { target: serverCfg, key: sv_allowdownload }
+            - { target: console,   key: sv_allowdownload }
+
+        allowUpload:
+          title: Allow clients to upload sprays
+          type: boolean
+          default: true
+          apply: live
+          write:
+            - { target: serverCfg, key: sv_allowupload }
+            - { target: console,   key: sv_allowupload }
+
+        motd:
+          title: Message of the day
+          type: string
+          ui: { widget: textarea, language: html }
+          default: ""
+          apply: live          # read when a player connects
+          write:
+            - { target: motd }
+
+# -----------------------------------------------------------------------------
+# Cross-field rules, in CEL (the expression language Kubernetes uses for
+# CRD validation). `self` is the values document's settings object.
+# -----------------------------------------------------------------------------
+rules:
+  - rule: "self.bots.quota + (self.sourcetv.enabled ? 1 : 0) <= self.general.maxPlayers"
+    message: "Bots plus the SourceTV slot cannot exceed max players."
+  - rule: "!self.sourcetv.enabled || self.sourcetv.port != self.network.port"
+    message: "SourceTV needs a different port from the game port."
+  - rule: "self.network.port != self.network.clientPort"
+    message: "Client port must differ from the game port."
+  - rule: "self.rules.timeLimit > 0 || self.rules.maxRounds > 0 || self.rules.winLimit > 0"
+    message: "With no time, round or win limit the map never ends on its own."
+    severity: warning
+
+# -----------------------------------------------------------------------------
+# Import: reading an existing server back into a values document.
+# The game applies the command line first and server.cfg after it, at every
+# map start, so server.cfg wins when both set the same cvar.
+# -----------------------------------------------------------------------------
+import:
+  precedence: [commandLine, serverCfg, mapcycle, bannedIds]   # later wins
+
+# -----------------------------------------------------------------------------
+# Live state (gsc-state/v0.1): how an adapter learns what the running server is
+# doing. Protocol field mappings live in the shared protocol library.
+# -----------------------------------------------------------------------------
+state:
+  ready:
+    any:
+      - { query: steam-a2s }                       # answers on the game port
+      - { log: 'Connection to Steam servers successful' }   # verify
+  queries:
+    - { protocol: steam-a2s, port: game, every: 15s, requests: [info, players] }
+  console:
+    status:
+      command: status
+      every: 60s
+      visibleToPlayers: false
+      parse:
+        - line: '^hostname\s*:\s*(?<name>.*)$'
+          into: { session.name: name }
+        - line: '^map\s*:\s*(?<map>\S+)'
+          into: { session.map: map }
+        - line: '^players\s*:\s*(?<online>\d+)\s+humans?,\s*(?<bots>\d+)\s+bots?\s+\((?<max>\d+)'   # newer builds   # verify
+          into: { players.online: online, players.bots: bots, players.max: max }
+        - line: '^#\s+(?<userid>\d+)\s+"(?<name>.*)"\s+(?<uniqueid>STEAM_\S+|BOT)\s+(?:(?<connected>[\d:]+)\s+(?<ping>\d+)\s+(?<loss>\d+)\s+)?(?<state>\w+)(?:\s+(?<address>[\d.]+):\d+)?'
+          each: players.list
+          fields: { name: name, ids.steam: uniqueid, ping: ping, connected: connected, address: address, bot: "uniqueid == 'BOT'" }
+  logs:
+    source: { file: "cstrike/logs/L*.log", newest: true }   # needs `log on` (the server.cfg writer adds it)   # verify
+    events:
+      player.joined: '"(?<name>.+?)<\d+><(?<steam>[^>]*)><[^>]*>" entered the game'
+      player.left:   '"(?<name>.+?)<\d+><(?<steam>[^>]*)><[^>]*>" disconnected'
+      map.changed:   'Started map "(?<map>[^"]+)"'
+      chat:          '"(?<name>.+?)<\d+><(?<steam>[^>]*)><[^>]*>" say "(?<message>.*)"'
+  reports:                                         # values the running server reports, for drift
+    general.hostname:   { from: steam-a2s, field: info.name }
+    general.maxPlayers: { from: steam-a2s, field: info.maxPlayers }

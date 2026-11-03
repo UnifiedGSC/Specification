@@ -1,0 +1,440 @@
+# =============================================================================
+# Minecraft: Java Edition (vanilla server) — reference game definition
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Tests the `properties` format (Java .properties) and JSON identity lists.
+#
+#   server.properties   motd=A Minecraft Server      level-type=minecraft\:normal
+#   ops.json            [{"uuid": "...", "name": "...", "level": 4, "bypassesPlayerLimit": false}]
+#
+# Format behavior that shapes the definition:
+#   - keys contain dots and dashes (rcon.port, level-seed) and are used verbatim
+#   - Java escaping: the server writes ':' as '\:'; the writer escapes the same way
+#   - the server rewrites server.properties at startup: comments are discarded,
+#     missing or unparseable keys reset to defaults, unknown keys are kept
+#   - identity lists need each player's UUID in the file; adding by name only
+#     works through the console, which looks the UUID up
+#
+# VERSIONING (area 10). Settings move between game versions, so writes carry
+# `since` / `until` (until is exclusive):
+#   - pvp and enable-command-block left server.properties in 1.21.9 and became
+#     game rules, set through the console and stored in the world
+#   - the command-block rule was later renamed to command_blocks_work (1.21.11)
+#   - spawn-animals was removed in 1.21.2
+#   - white-list's default changed from false to true in 26.3
+# The installed version is detected, never typed in by the admin.
+#
+# Source: GameServerKings "Minecraft server.properties: the complete reference".
+# Items marked `# verify` are from memory.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# This file's own version. Values documents record which version they were
+# written against; `migrations` bring older ones up to date.
+definition:
+  id: gsc-examples/minecraft-java
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+  version: 2.1.0
+  migrations:
+    - to: 2.0.0
+      # Illustrative: version 1 of this definition named the setting differently.
+      rename: { access.whiteList: access.whitelistEnabled }
+
+game:
+  id: minecraft-java
+  name: "Minecraft: Java Edition"
+  match:                            # how a panel recognizes an install; Steam app IDs count too
+    files: [server.jar]   # each entry must exist; a list inside means any one of them   # verify
+  engine: minecraft-java
+  implementation: vanilla
+  platforms: [linux, windows, macos]
+  versions:
+    scheme: dotted                    # numeric per segment: 1.21.9 < 1.21.11 < 26.3
+    supported: ">=1.20.5"             # the range this definition was written for
+    unknown: warnAndUseNewest         # e.g. snapshots like 25w10a, which dotted cannot order
+    detect:
+      - via: archiveFile              # needs file access
+        archive: "{installDir}/server.jar"
+        entry: version.json           # verify file name
+        field: id
+      - via: query                    # needs only the running server (live-state spec)
+        protocol: minecraft-slp
+        field: version.name
+
+ports:
+  game:
+    purpose: game
+    protocol: tcp
+    default: 25565
+    setting: network.port
+    exposure: public
+    speaks: [minecraft-slp]            # server list ping
+  query:
+    purpose: query
+    protocol: udp
+    default: 25565
+    setting: network.queryPort
+    when: "self.network.enableQuery"
+    exposure: public
+    speaks: [minecraft-query]
+  rcon:
+    purpose: rcon
+    protocol: tcp
+    default: 25575
+    setting: admin.rconPort
+    when: "self.admin.enableRcon && self.admin.rconPassword != ''"
+    exposure: private
+    speaks: [source-rcon]
+
+console:
+  protocol: source-rcon
+  port: rcon
+  password: admin.rconPassword
+
+targets:
+  properties:
+    type: file
+    path: "{installDir}/server.properties"
+    format: properties
+    booleans: ["true", "false"]
+    owner: shared                      # rewritten by the server at every start
+    writeWhen: stopped                 # read once at startup; later edits are overwritten
+    commentsSurvive: false             # the server discards comments, so GSC writes none
+
+  ops:
+    type: file
+    path: "{installDir}/ops.json"
+    format: json
+    owner: shared                      # /op and /deop rewrite it while running
+    writeWhen: stopped
+
+  whitelist:
+    type: file
+    path: "{installDir}/whitelist.json"
+    format: json
+    owner: shared
+    writeWhen: stopped
+
+  console:
+    type: console
+
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    general:
+      title: General
+      type: object
+      properties:
+        motd:
+          title: Message of the day
+          description: Shown in the server list. Supports § formatting codes; keep to 59 characters.
+          type: string
+          maxLength: 59
+          default: "A Minecraft Server"
+          apply: restart
+          write: [{ target: properties, key: motd }]
+
+        maxPlayers:
+          title: Max players
+          classes: [resource]
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+          default: 20
+          apply: restart
+          write: [{ target: properties, key: max-players }]
+
+    gameplay:
+      title: Gameplay
+      type: object
+      properties:
+        difficulty:
+          title: Difficulty
+          type: string
+          enum: [peaceful, easy, normal, hard]
+          default: easy
+          apply: live
+          write:
+            - { target: properties, key: difficulty }
+            - { target: console, command: "difficulty {value}" }   # verify: /difficulty is vanilla
+
+        gamemode:
+          title: Default game mode
+          type: string
+          enum: [survival, creative, adventure, spectator]
+          default: survival
+          apply: restart
+          write: [{ target: properties, key: gamemode }]
+
+        hardcore:
+          title: Hardcore
+          type: boolean
+          default: false
+          apply: worldCreate
+          storedIn: world
+          write: [{ target: properties, key: hardcore }]
+
+        viewDistance:
+          title: View distance
+          classes: [resource]
+          type: integer
+          minimum: 3
+          maximum: 32
+          default: 10
+          ui: { unit: chunks }
+          apply: restart
+          write: [{ target: properties, key: view-distance }]
+
+        simulationDistance:
+          title: Simulation distance
+          classes: [resource]
+          type: integer
+          minimum: 3
+          maximum: 32
+          default: 10
+          ui: { unit: chunks }
+          apply: restart
+          write: [{ target: properties, key: simulation-distance }]
+
+        pvp:
+          title: Player versus player
+          type: boolean
+          default: true
+          apply: live
+          write:
+            - { target: properties, key: pvp, until: "1.21.9" }
+            # Since 1.21.9 a game rule: stored in the world, so it can only be
+            # set while the server runs.
+            - { target: console, command: "gamerule pvp {value}", since: "1.21.9", pendingWhileStopped: true }
+
+        commandBlocks:
+          title: Command blocks work
+          type: boolean
+          default: false
+          apply: live
+          write:
+            - { target: properties, key: enable-command-block, until: "1.21.9" }
+            - { target: console, command: "gamerule commandBlocksEnabled {value}", since: "1.21.9", until: "1.21.11", pendingWhileStopped: true }   # verify name in 1.21.9-1.21.10
+            - { target: console, command: "gamerule command_blocks_work {value}", since: "1.21.11", pendingWhileStopped: true }
+
+        spawnAnimals:
+          title: Spawn animals
+          type: boolean
+          default: true
+          until: "1.21.2"                    # removed outright
+          apply: restart
+          write: [{ target: properties, key: spawn-animals }]
+
+        spawnProtection:
+          title: Spawn protection radius
+          type: integer
+          minimum: 0
+          default: 16
+          ui: { unit: blocks }
+          apply: restart
+          write: [{ target: properties, key: spawn-protection }]
+
+    world:
+      title: World
+      type: object
+      scopes: []
+      properties:
+        levelName:
+          title: World folder
+          type: string
+          minLength: 1
+          default: world
+          apply: restart
+          write: [{ target: properties, key: level-name }]
+
+        levelSeed:
+          title: Seed
+          description: Used only when the world is first created.
+          type: string
+          default: ""
+          apply: worldCreate
+          storedIn: world
+          write: [{ target: properties, key: level-seed }]
+
+    network:
+      title: Network
+      type: object
+      scopes: []
+      properties:
+        port:
+          title: Port
+          type: integer
+          minimum: 1
+          maximum: 65534
+          default: 25565
+          apply: restart
+          write: [{ target: properties, key: server-port }]
+        enableQuery:
+          title: Enable query protocol
+          type: boolean
+          default: false
+          apply: restart
+          write: [{ target: properties, key: enable-query }]
+        queryPort:
+          title: Query port
+          type: integer
+          minimum: 1
+          maximum: 65534
+          default: 25565
+          apply: restart
+          write: [{ target: properties, key: query.port }]
+
+    access:
+      title: Access
+      type: object
+      scopes: []
+      properties:
+        onlineMode:
+          title: Verify accounts with Mojang
+          classes: [security]
+          description: Keep on. Off lets anyone join under any name.
+          type: boolean
+          default: true
+          apply: restart
+          write: [{ target: properties, key: online-mode }]
+
+        whitelistEnabled:
+          title: Whitelist enabled
+          type: boolean
+          default: false
+          versionDefaults:
+            - { since: "26.3", value: true }   # the game's own default changed
+          apply: live
+          write:
+            - { target: properties, key: white-list }
+            - { target: console, command: "whitelist {value}", encode: { "true": "on", "false": "off" } }
+
+        enforceWhitelist:
+          title: Kick players not on the whitelist
+          type: boolean
+          default: false
+          apply: restart
+          write: [{ target: properties, key: enforce-whitelist }]
+
+        whitelist:
+          title: Whitelist
+          kind: identityList
+          type: array
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: { type: string, pattern: '^[A-Za-z0-9_]{3,16}$' }
+              uuid: { type: string, format: uuid, description: "Needed to write the file; the console looks it up by name" }
+          default: []
+          apply: live
+          write:
+            - target: whitelist
+              pointer: ""                  # the whole document is the list
+              items: { uuid: "{uuid}", name: "{name}" }
+              onlyItemsWith: [uuid]        # entries without a UUID wait for the console
+            - target: console
+              add:    ["whitelist add {name}"]
+              remove: ["whitelist remove {name}"]
+
+        ops:
+          title: Operators
+          kind: identityList
+          type: array
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: { type: string, pattern: '^[A-Za-z0-9_]{3,16}$' }
+              uuid: { type: string, format: uuid }
+              level:
+                type: integer
+                minimum: 1
+                maximum: 4
+                default: 4
+              bypassesPlayerLimit: { type: boolean, default: false }
+          default: []
+          apply: live
+          write:
+            - target: ops
+              pointer: ""
+              items: { uuid: "{uuid}", name: "{name}", level: "{level}", bypassesPlayerLimit: "{bypassesPlayerLimit}" }   # verify field set
+              onlyItemsWith: [uuid]
+            - target: console
+              add:    ["op {name}"]          # the console cannot set level; it uses the server's default op level   # verify
+              remove: ["deop {name}"]
+
+    admin:
+      title: Administration
+      type: object
+      scopes: []
+      properties:
+        enableRcon:
+          title: Enable RCON
+          classes: [security]
+          type: boolean
+          default: false
+          apply: restart
+          write: [{ target: properties, key: enable-rcon }]
+        rconPort:
+          title: RCON port
+          type: integer
+          minimum: 1
+          maximum: 65534
+          default: 25575
+          apply: restart
+          write: [{ target: properties, key: rcon.port }]
+        rconPassword:
+          title: RCON password
+          description: RCON does not start if this is empty.
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: [{ target: properties, key: rcon.password }]
+
+rules:
+  - rule: "!self.admin.enableRcon || self.admin.rconPassword != ''"
+    message: "RCON will not start without a password."
+  - rule: "!self.access.enforceWhitelist || self.access.whitelistEnabled"
+    message: "Enforcing the whitelist has no effect while the whitelist is off."
+    severity: warning
+  - rule: "self.network.port != self.admin.rconPort"
+    message: "The game port and RCON port must differ."
+
+# -----------------------------------------------------------------------------
+# Live state (gsc-state/v0.1)
+# -----------------------------------------------------------------------------
+state:
+  ready:
+    any:
+      - { log: 'Done \(\d+(?:\.\d+)?s\)! For help, type "help"' }
+      - { query: minecraft-slp }
+  queries:
+    - { protocol: minecraft-slp, port: game, every: 15s }
+    - { protocol: minecraft-query, port: query, every: 30s, when: "self.network.enableQuery" }
+  console:
+    list:
+      command: list uuids                          # names and UUIDs in one line   # verify
+      every: 60s
+      visibleToPlayers: false
+      parse:
+        - line: 'There are (?<online>\d+) of a max of (?<max>\d+) players online:\s*(?<rest>.*)$'
+          into: { players.online: online, players.max: max }
+          split: { field: rest, by: ', ', pattern: '^(?<name>\w+)(?: \((?<uuid>[0-9a-f-]{36})\))?$', each: players.list,
+                   fields: { name: name, ids.uuid: uuid } }
+  logs:
+    source: { stdout: true, file: "{installDir}/logs/latest.log" }
+    events:
+      player.joined: '\]: (?<name>\w{3,16}) joined the game'
+      player.left:   '\]: (?<name>\w{3,16}) left the game'
+      chat:          '\]: <(?<name>\w{3,16})> (?<message>.*)$'
+      server.warning: "Can't keep up! Is the server overloaded\\? Running (?<behindMs>\\d+)ms or (?<ticks>\\d+) ticks behind"
+  reports:
+    general.maxPlayers: { from: minecraft-slp, field: players.max }
+    general.motd:       { from: minecraft-slp, field: description }   # flattened to plain text; § codes kept

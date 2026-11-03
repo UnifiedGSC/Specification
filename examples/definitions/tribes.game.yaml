@@ -1,0 +1,305 @@
+# =============================================================================
+# Starsiege: Tribes (1998) — reference game definition
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Fifth worked example: CONFIG WRITTEN AS CODE. Server settings are global
+# variables in the game's own scripting language, set by .cs script files the
+# server executes:
+#
+#   $Server::HostName = "My Tribes Server";
+#   $Server::MaxPlayers = 16;
+#
+# The game keeps its own serverPrefs.cs, which it may rewrite itself. Rather
+# than edit that file, GSC writes its OWN script, executed after it with
+# `+exec`, so GSC values override the game's prefs and the two never fight.
+# This is the guide's own recommendation for shared client/server installs.
+#
+# New format features:
+#   - `tribes-script` format: assignments to script globals, with proper string
+#     escaping instead of forbidding characters
+#   - a GSC-owned overlay file (`owner: gsc`, `layersOver`) instead of editing
+#     the game-owned prefs file, which becomes a read-only import source
+#   - `statement` writes: script function calls, not just assignments
+#   - a per-server file name from the values document id ({server.id}), so
+#     several servers can share one install
+#   - live changes through admin script functions rather than assignments
+#
+# Source: t1998.net "Basic Server Administration". Items marked `# verify`
+# are from memory or not covered there.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/tribes
+  version: 0.1.0
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+
+game:
+  id: starsiege-tribes
+  name: "Starsiege: Tribes"
+  match:                            # how a panel recognizes an install; Steam app IDs count too
+    files: [Tribes.exe, base/scripts.vol]   # each entry must exist; a list inside means any one of them   # verify
+  engine: darkstar
+  platforms: [windows]
+
+ports:
+  game:
+    purpose: game
+    protocol: udp
+    default: 28001                   # the guide's examples start at 28001   # verify engine default
+    setting: network.port
+    exposure: public
+
+  telnet:
+    purpose: rcon
+    protocol: tcp
+    default: 28001                   # verify
+    setting: admin.telnetPort
+    when: "self.admin.telnetPassword != ''"
+    exposure: private
+    speaks: [tribes-telnet]          # verify
+
+# The telnet console accepts script statements, so a live write is just a
+# statement such as `$Server::TimeLimit = 30;` or `ADSetTimeLimit(30);`.
+# The guide references its telnet page but does not include it.   # verify
+console:
+  protocol: tribes-telnet
+  port: telnet
+  password: admin.telnetPassword
+  language: tribes-script
+
+# -----------------------------------------------------------------------------
+# Targets
+# -----------------------------------------------------------------------------
+targets:
+  commandLine:
+    type: args
+    # tribes +exec gsc-<server id> -dedicated
+    # (`infiniteSpawn *tribes ...` adds auto-restart; process supervision is a
+    #  panel's job, so GSC launches `tribes` directly)
+    executable: tribes
+    workingDir: "{installDir}"
+    fixed: ["+exec", "gsc-{server.id}", "-dedicated"]   # +exec takes the name without .cs
+
+  serverConfig:
+    type: file
+    path: "{installDir}/config/gsc-{server.id}.cs"
+    format: tribes-script            # $Name = value;   statement();   // comments
+                                     # {value} in a statement renders as a script literal:
+                                     # strings quoted with \" and \\ escaped, numbers bare
+    owner: gsc                       # GSC generates the whole file
+    layersOver: serverPrefs          # executed after the game's prefs, so it wins
+    executes: onStart
+    booleans: ["true", "false"]      # verify (1/0 may also be accepted)
+
+  serverPrefs:
+    type: file
+    path: "{installDir}/config/serverPrefs.cs"
+    format: tribes-script
+    owner: game                      # written by the game; shared with the client
+    access: readOnly                 # GSC imports from it but never writes it
+
+  console:
+    type: console
+    booleans: ["true", "false"]
+
+# -----------------------------------------------------------------------------
+# Settings (JSON Schema)
+#
+# Most writes go to the overlay file and, while running, the same assignment is
+# sent over telnet. Whether the running game reacts to a changed global
+# immediately depends on the script that reads it, so most settings are
+# conservatively `restart` until tested.   # verify per setting
+# -----------------------------------------------------------------------------
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    general:
+      title: General
+      type: object
+      properties:
+        hostName:
+          title: Server name
+          type: string
+          minLength: 1
+          default: "Tribes Server"
+          apply: restart                       # verify: may apply at next heartbeat
+          write:
+            - { target: serverConfig, var: "$Server::HostName" }
+            - { target: console,      var: "$Server::HostName" }
+
+        info:
+          title: Server info
+          description: Shown on the Game Info screen. Include an admin name and email.
+          type: string
+          default: ""
+          ui: { widget: textarea }
+          apply: restart
+          write:
+            - { target: serverConfig, var: "$Server::Info" }
+            - { target: console,      var: "$Server::Info" }
+
+        joinMotd:
+          title: Join message
+          description: Shown to players when they join.
+          type: string
+          default: ""
+          ui: { widget: textarea }
+          apply: live                          # read when a player joins   # verify
+          write:
+            - { target: serverConfig, var: "$Server::JoinMOTD" }
+            - { target: console,      var: "$Server::JoinMOTD" }
+
+        password:
+          title: Join password
+          type: string
+          writeOnly: true
+          default: ""
+          apply: live
+          write:
+            - { target: serverConfig, var: "$Server::Password" }
+            - { target: console, statement: 'SADSetPassword({value});' }   # admin function sets it live
+
+        maxPlayers:
+          title: Max players
+          description: The engine allows 128, but more than 32 is not recommended.
+          type: integer
+          minimum: 1
+          maximum: 128
+          default: 16                          # verify engine default
+          apply: restart
+          write:
+            - { target: serverConfig, var: "$Server::MaxPlayers" }
+
+        public:
+          title: List on the master server
+          type: boolean
+          default: true
+          apply: restart
+          write:
+            - { target: serverConfig, var: "$Server::HostPublicGame" }
+
+    network:
+      title: Network
+      type: object
+      properties:
+        port:
+          title: Port
+          description: Give each server sharing an install its own port.
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 28001
+          apply: restart
+          write:
+            - { target: serverConfig, var: "$Server::Port" }
+
+        packetRate:
+          title: Packet rate per client
+          description: Maximum packets per second sent to each client.
+          type: integer
+          minimum: 1
+          default: 10                          # the guide's recommendation   # verify engine default
+          ui: { unit: "packets/s" }
+          apply: restart
+          write:
+            - { target: serverConfig, var: "$pref::PacketRate" }
+
+        packetSize:
+          title: Packet size per client
+          type: integer
+          minimum: 1
+          default: 200                         # the guide's recommendation   # verify engine default
+          ui: { unit: bytes }
+          apply: restart
+          write:
+            - { target: serverConfig, var: "$pref::PacketSize" }
+
+    match:
+      title: Match
+      type: object
+      properties:
+        timeLimit:
+          title: Mission time limit
+          type: integer
+          minimum: 0
+          default: 25                          # verify
+          ui: { unit: minutes, zeroMeans: "No limit" }   # verify that 0 means none
+          apply: live
+          write:
+            - { target: serverConfig, var: "$Server::TimeLimit" }
+            - { target: console, statement: 'ADSetTimeLimit({value});' }
+
+        teams:
+          title: Teams
+          description: Team names and skins, applied with ADSetTeamInfo.
+          type: array
+          maxItems: 8                          # verify
+          items:
+            type: object
+            required: [name, skinBase]
+            properties:
+              name:     { type: string, minLength: 1 }
+              skinBase: { type: string, examples: [beagle, dsword] }   # full list not documented
+          default: []
+          apply: live                          # verify: may need a running mission
+          write:
+            - target: serverConfig
+              each: item
+              statement: 'ADSetTeamInfo({index}, {item.name}, {item.skinBase});'
+            - target: console
+              each: item
+              statement: 'ADSetTeamInfo({index}, {item.name}, {item.skinBase});'
+
+    admin:
+      title: Administration
+      type: object
+      properties:
+        adminPassword:
+          title: Admin password
+          description: Players type SAD("password"); in the console to become admin.
+          type: string
+          writeOnly: true
+          default: ""
+          apply: live
+          write:
+            - { target: serverConfig, var: "$AdminPassword" }
+            - { target: console,      var: "$AdminPassword" }
+
+        telnetPort:
+          title: Telnet console port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 28001                       # verify
+          apply: restart
+          write:
+            - { target: serverConfig, var: "$TelnetPort" }        # verify name
+
+        telnetPassword:
+          title: Telnet console password
+          description: Empty disables remote administration.
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          reconnectsConsole: true
+          write:
+            - { target: serverConfig, var: "$TelnetPassword" }    # verify name
+
+# -----------------------------------------------------------------------------
+# Rules (CEL)
+# -----------------------------------------------------------------------------
+rules:
+  - rule: "self.general.maxPlayers <= 32"
+    message: "More than 32 players is not recommended; clients with slower machines struggle."
+    severity: warning
+  - rule: "self.admin.telnetPassword == '' || self.admin.telnetPort != self.network.port"
+    message: "The telnet console needs a different port from the game."   # verify: TCP vs UDP may allow sharing
+    severity: warning

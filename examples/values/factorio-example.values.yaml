@@ -1,0 +1,26 @@
+spec: gsc/v0.1
+kind: ServerValues
+game: factorio
+definitionId: gsc-examples/factorio
+definitionVersion: 0.1.0
+id: fac-megabase
+settings:
+  general:
+    name: "Megabase & Friends"
+    description: "Vanilla, \"trains only\" rules."
+    tags: [vanilla, trains]
+    maxPlayers: 16
+  visibility:
+    public: false
+  rules:
+    allowCommands: "false"
+    afkAutokick: 30
+  saves:
+    autosaveInterval: 5
+  admin:
+    admins:
+      - { name: Pat }
+  mods:
+    list:                                   # fictional mod names, matching the test's mock portal
+      - { name: example-belt-tools }
+      - { name: example-train-signals, version: "1.4.0" }

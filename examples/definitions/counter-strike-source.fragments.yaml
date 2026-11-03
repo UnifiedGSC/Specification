@@ -1,0 +1,87 @@
+# =============================================================================
+# Counter-Strike: Source — schema fragments contributed by mods
+# Game Server Config Standard (GSC), draft v0.1
+#
+# A fragment adds settings, targets and rules to a game definition when its
+# `detect` condition matches the installed server. Each YAML document below is
+# one fragment. Settings are merged under the fragment's own group key, so mod
+# settings can never collide with the base game's.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: SchemaFragment
+id: sourcemod-admins
+extends: counter-strike-source
+name: SourceMod admins
+detect:
+  file: cstrike/addons/sourcemod/bin    # verify path used for detection
+
+targets:
+  adminsSimple:
+    type: file
+    path: cstrike/addons/sourcemod/configs/admins_simple.ini
+    format: lines
+    comments: "//"
+
+settings:
+  properties:
+    sourcemod:
+      title: SourceMod
+      type: object
+      properties:
+        admins:
+          title: Admins
+          kind: identityList
+          type: array
+          items:
+            type: object
+            required: [id, flags]
+            properties:
+              id:
+                type: string
+                format: steamid2
+              immunity:
+                type: integer
+                minimum: 0
+                maximum: 99
+                default: 0
+              flags:
+                title: Permission flags
+                description: SourceMod admin flags, e.g. "z" for root.
+                type: string
+                pattern: '^[a-z]+$'
+          default: []
+          apply: live
+          write:
+            - target: adminsSimple
+              line: '"{id}" "{immunity}:{flags}"'   # verify format
+            - target: console
+              after: ["sm_reloadadmins"]          # reload once the file is written
+
+---
+spec: gsc/v0.1
+kind: SchemaFragment
+id: tickrate-enabler
+extends: counter-strike-source
+name: Tickrate enabler
+# Since the 2010 engine update, CS:S runs at a fixed 66 tick and ignores
+# -tickrate unless a tickrate-enabler plugin is installed.   # verify
+detect:
+  glob: "cstrike/addons/**/tickrate_enabler*"                 # verify
+
+settings:
+  properties:
+    tickrate:
+      title: Tick rate
+      type: object
+      properties:
+        rate:
+          title: Server tick rate
+          type: integer
+          oneOf:
+            - { const: 66,  title: "66 (default)" }
+            - { const: 100, title: "100 (higher CPU use)" }
+          default: 66
+          apply: restart
+          write:
+            - { target: commandLine, arg: "-tickrate" }

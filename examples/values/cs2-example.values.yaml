@@ -1,0 +1,16 @@
+spec: gsc/v0.1
+kind: ServerValues
+game: counter-strike-2
+definitionId: gsc-examples/counter-strike-2
+definitionVersion: 0.1.0
+id: cs2-surf
+fragments: []
+
+settings:
+  workshop:
+    collection: "1092904694"
+    allowOtherMaps: false
+  network:
+    steamToken: { $secret: network.steamToken }
+  admin:
+    rconPassword: { $secret: admin.rconPassword, generate: true }

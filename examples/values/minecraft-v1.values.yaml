@@ -1,0 +1,11 @@
+# Written against version 1 of the Minecraft definition, which named the
+# whitelist toggle access.whiteList. Migrated to 2.0.0 when loaded.
+spec: gsc/v0.1
+kind: ServerValues
+game: minecraft-java
+definitionId: gsc-examples/minecraft-java
+definitionVersion: 1.3.0
+id: mc-old-server
+settings:
+  access:
+    whiteList: true

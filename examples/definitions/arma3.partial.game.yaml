@@ -1,0 +1,167 @@
+# =============================================================================
+# Arma 3 — PARTIAL reference definition (mods only)
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Tests content the SERVER CANNOT FETCH ITSELF. Someone else (the GSC agent or
+# the panel) must download each Workshop mod with SteamCMD, using an account
+# that owns Arma 3, then install it where the server expects it:
+#
+#   steamcmd +login <account> +workshop_download_item 107410 450814997 +quit
+#   -> link to @450814997, lowercase its files on Linux, copy its .bikey to keys/
+#   arma3server -mod=@450814997;@463939057 -serverMod=@server_tools
+#
+# New format features:
+#   - `fetchedBy: agent` with `fetch` (tool, arguments, result path), `install`
+#     steps, and an `update` policy
+#   - list settings that write ONE argument assembled from many items
+#     (`join`), filtered by a field of each item (client vs server-side mods)
+#   - order that matters: items keep the order the admin gives them
+#   - dependencies checked against the list rather than added automatically
+#   - credentials for fetching, kept apart from server settings
+#
+# Source: GameServerKings "Arma 3 mods". Its panel image automates these steps;
+# the SteamCMD command and download path are from memory.   # verify
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/arma3
+  version: 0.1.0
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+  status: partial                 # covers one feature, not the whole game
+partial: true
+
+game:
+  id: arma-3
+  name: "Arma 3"
+  engine: real-virtuality-4
+  steam:
+    appId: 107410
+    dedicatedAppId: 233780            # verify
+  platforms: [linux, windows]
+
+console: none                         # BattlEye RCON exists; not modeled in this excerpt
+
+targets:
+  commandLine:
+    type: args
+    style: equals                     # -mod=@a;@b
+    fixed: ["-config=server.cfg"]
+
+  serverCfg:
+    type: file
+    path: "{installDir}/server.cfg"
+    format: arma-cfg                  # class syntax; only top-level assignments are used here
+    owner: shared
+
+content:
+  sources:
+    workshop:
+      kind: steam-workshop
+      appId: 107410
+      fetchedBy: agent
+      credentials: settings.workshopAccount   # an account that owns Arma 3; not anonymous
+      fetch:
+        tool: steamcmd
+        args: ["+force_install_dir", "{cacheDir}",
+               "+login", "{credentials.username}", "{credentials.password}",
+               "+workshop_download_item", "107410", "{id}", "validate", "+quit"]
+        result: "{cacheDir}/steamapps/workshop/content/107410/{id}"   # verify
+        limits: { maxBytes: 20000000000 }       # downloads are untrusted and can be huge
+      update: ifNewer                 # compare the item's Workshop update time with the installed copy
+      install:
+        - link:      { from: "{result}", to: "{installDir}/@{id}", fallback: copy, installedAs: "@{id}" }
+        - lowercase: { path: "{installDir}/@{id}", platforms: [linux] }   # some mods fail with capitals on Linux
+        - copy:      { glob: "{installDir}/@{id}/{keys,key}/*.bikey", to: "{installDir}/keys/" }
+      dependencies:
+        from: steam-required-items    # the Workshop page's "Required items"   # verify API
+        policy: requireListed         # report missing ones; the admin decides order and side
+
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    mods:
+      title: Mods
+      type: object
+      scopes: []
+      properties:
+        list:
+          title: Mods
+          description: In load order. Client mods must also be run by every player.
+          kind: contentRef
+          source: workshop
+          type: array
+          items:
+            type: object
+            properties:
+              id:   { type: string, pattern: '^[0-9]+$', description: "Workshop item ID" }
+              path: { type: string, pattern: '^@[a-z0-9_]+$', description: "A mod uploaded by hand instead" }
+              name: { type: string }
+              side:
+                type: string
+                oneOf:
+                  - { const: both,   title: "Server and clients (-mod)" }
+                  - { const: server, title: "Server only (-serverMod)" }
+                default: both
+            oneOf:
+              - { required: [id] }
+              - { required: [path] }
+          ui: { widget: orderedList }
+          default: []
+          apply: restart
+          write:
+            - target: commandLine
+              arg: "-mod"
+              join: ";"
+              item: "{installedAs}"        # `path` for a hand-uploaded mod, else the install step's folder (@<id>)
+              filter: "item.side == 'both'"
+              skipIfEmpty: true
+            - target: commandLine
+              arg: "-serverMod"
+              join: ";"
+              item: "{installedAs}"
+              filter: "item.side == 'server'"
+              skipIfEmpty: true
+
+        verifySignatures:
+          title: Verify mod signatures
+          description: Keep on; players then need matching keys, which GSC installs from each mod.
+          type: integer
+          oneOf:
+            - { const: 2, title: "On" }
+            - { const: 0, title: "Off" }
+          default: 2
+          apply: restart
+          write: [{ target: serverCfg, key: verifySignatures }]
+
+    workshopAccount:
+      title: Workshop download account
+      description: A Steam account that owns Arma 3, used only to download mods.
+      type: object
+      scopes: []
+      properties:
+        username:
+          title: Steam username
+          type: string
+          default: ""
+          apply: restart
+          write: []                    # credentials for fetching, never written to the server
+        password:
+          title: Steam password
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: []
+
+rules:
+  - rule: "self.mods.list.size() == 0 || self.workshopAccount.username != ''"
+    message: "Downloading Workshop mods needs a Steam account that owns Arma 3."
+  - rule: "self.mods.list.all(m, !has(m.id) || self.mods.list.exists_one(n, has(n.id) && n.id == m.id))"
+    message: "A mod is listed twice."

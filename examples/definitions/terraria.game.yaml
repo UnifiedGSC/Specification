@@ -1,0 +1,231 @@
+# =============================================================================
+# Terraria (vanilla dedicated server) — reference game definition
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Tests settings that are only asked for INTERACTIVELY. Started without a
+# config, the server asks questions on its console: pick a world from a
+# numbered menu (or "n" for a new one), max players, port, port forwarding,
+# password. Some older servers only work this way.
+#
+# Two profiles:
+#   config       serverconfig.txt passed with -config: no questions asked
+#   interactive  answer the startup prompts: tests the `prompts` target
+#
+# New format features:
+#   - `type: prompts` targets: expect a prompt, send an answer; pick an entry
+#     from a menu the server prints; stop safely on an unexpected question
+#   - `console: { protocol: stdin }`: commands to a process the agent launched
+#
+# Sources: Terraria Wiki (Spanish) "Server" for command-line parameters and
+# serverconfig.txt keys; Supercraft "Terraria dedicated server setup" for the
+# prompt sequence. The prompts' exact wording is from memory.   # verify
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/terraria
+  version: 0.1.0
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+
+game:
+  id: terraria
+  name: Terraria
+  match:                            # how a panel recognizes an install; Steam app IDs count too
+    files: [[TerrariaServer.exe, TerrariaServer.bin.x86_64, TerrariaServer]]   # each entry must exist; a list inside means any one of them   # verify
+  engine: terraria
+  implementation: vanilla
+  platforms: [linux, windows, macos]
+
+profiles:
+  default: config
+  config:
+    title: serverconfig.txt (recommended)
+  interactive:
+    title: Answer the startup prompts
+
+ports:
+  game:
+    purpose: game
+    protocol: tcp
+    default: 7777
+    setting: network.port
+    exposure: public
+
+# The agent starts the process, so it owns stdin and can type console commands.
+console:
+  protocol: stdin
+
+sources:
+  worlds:
+    kind: files
+    glob: "{settings.world.folder}/*.wld"
+    value: "{stem}"
+
+targets:
+  commandLine:
+    type: args
+    profiles: [config]
+    fixed: ["-config", "{targets.serverConfig.path}"]
+
+  serverConfig:
+    type: file
+    profiles: [config]
+    path: "{installDir}/gsc-{server.id}.serverconfig.txt"
+    format: kvp                       # key=value, '#' comments
+    owner: gsc
+    booleans: ["1", "0"]
+
+  startupPrompts:
+    type: prompts
+    profiles: [interactive]
+    timeout: 30s                      # per prompt
+    onUnexpected: stop                # an unrecognized question stops the start; the transcript is reported
+    transcript: keep                  # kept for the report, with secret answers masked
+    steps:
+      - id: chooseWorld
+        expect: '^Choose World: ?$'   # verify wording
+        menu:
+          line: '^(?<number>\d+)\t+(?<name>.+?)\s*$'   # "1		MyWorld"
+          newEntry: "n"                                # when no entry matches
+      # Asked only after "n":
+      - { id: worldSize,       expect: '^Choose size: ?$',               when: newWorld }   # verify
+      - { id: worldDifficulty, expect: '^Choose difficulty: ?$',         when: newWorld }   # verify
+      - { id: worldName,       expect: '^Enter world name: ?$',          when: newWorld }   # verify
+      - { id: worldSeed,       expect: '^Enter Seed.*: ?$',              when: newWorld, answer: "" }   # verify; blank = random
+      - { id: maxPlayers,      expect: '^Max players \(press enter for 8\): ?$' }           # verify
+      - { id: port,            expect: '^Server port \(press enter for 7777\): ?$' }        # verify
+      - { id: forwardPort,     expect: '^Automatically forward port\? \(y/n\): ?$' }        # verify
+      - { id: password,        expect: '^Server password \(press enter for none\): ?$' }    # verify
+    readyWhen: '^Server started$'     # verify
+
+  console:
+    type: console
+
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    world:
+      title: World
+      type: object
+      scopes: []
+      properties:
+        folder:
+          title: Worlds folder
+          description: In the interactive profile the server uses its own folder, and its world menu is the list of worlds.
+          type: string
+          default: "{dataDir}/Worlds"
+          profiles: [config]
+          apply: restart
+          write: [{ target: serverConfig, key: worldpath }]
+        name:
+          title: World
+          description: Pick an existing world, or type a new name to create one.
+          type: string
+          minLength: 1
+          optionsFrom: worlds
+          allowCustom: true
+          default: World
+          apply: restart
+          write:
+            - { target: serverConfig, key: world, value: "{settings.world.folder}/{value}.wld" }
+            - { target: serverConfig, key: worldname }
+            - { target: startupPrompts, step: chooseWorld, selectBy: name }   # answers with the menu number
+            - { target: startupPrompts, step: worldName }
+        size:
+          title: New world size
+          type: integer
+          oneOf:
+            - { const: 1, title: Small }
+            - { const: 2, title: Medium }
+            - { const: 3, title: Large }
+          default: 2
+          apply: worldCreate
+          storedIn: world
+          write:
+            - { target: serverConfig, key: autocreate }   # creates the world if it does not exist
+            - { target: startupPrompts, step: worldSize }
+        difficulty:
+          title: New world difficulty
+          type: integer
+          oneOf:                                         # verify numbering
+            - { const: 1, title: Classic }
+            - { const: 2, title: Expert }
+            - { const: 3, title: Master }
+            - { const: 4, title: Journey }
+          default: 1
+          apply: worldCreate
+          storedIn: world
+          write:
+            - { target: serverConfig, key: difficulty, encode: { "1": 0, "2": 1, "3": 2, "4": 3 } }   # verify: config counts from 0
+            - { target: startupPrompts, step: worldDifficulty }
+
+    general:
+      title: General
+      type: object
+      properties:
+        maxPlayers:
+          title: Max players
+          type: integer
+          minimum: 1
+          maximum: 255
+          default: 8
+          apply: restart
+          write:
+            - { target: serverConfig, key: maxplayers }
+            - { target: startupPrompts, step: maxPlayers }
+        password:
+          title: Join password
+          type: string
+          writeOnly: true
+          default: ""
+          apply: live
+          write:
+            - { target: serverConfig, key: password }
+            - { target: startupPrompts, step: password }
+            - { target: console, command: "password {value}" }      # verify
+        motd:
+          title: Message of the day
+          type: string
+          default: ""
+          apply: live
+          write:
+            - { target: serverConfig, key: motd }
+            - { target: console, command: "motd {value}" }          # verify; no startup prompt asks for it
+        secure:
+          title: Extra cheat protection
+          type: boolean
+          default: true
+          profiles: [config]                                        # no prompt and no command for it
+          apply: restart
+          write: [{ target: serverConfig, key: secure }]
+
+    network:
+      title: Network
+      type: object
+      scopes: []
+      properties:
+        port:
+          title: Port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 7777
+          apply: restart
+          write:
+            - { target: serverConfig, key: port }
+            - { target: startupPrompts, step: port }
+        forwardPort:
+          title: Forward the port with UPnP
+          description: Does not always work; forward it on the router instead where possible.
+          type: boolean
+          default: false
+          apply: restart
+          write:
+            - { target: serverConfig, key: upnp }                    # verify key
+            - { target: startupPrompts, step: forwardPort, encode: { "true": "y", "false": "n" } }

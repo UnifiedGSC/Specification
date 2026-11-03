@@ -1,0 +1,17 @@
+spec: gsc/v0.1
+kind: ServerValues
+game: 7-days-to-die
+definitionId: gsc-examples/7-days-to-die
+definitionVersion: 0.1.0
+id: 7d-horde
+settings:
+  general:
+    serverName: "Horde Night <Friday> & Saturday"
+    maxPlayers: 8
+  world:
+    gameWorld: RWG
+    seed: "dead-of-winter"
+    size: 6144
+    difficulty: 3
+  admin:
+    telnetPassword: { $secret: admin.telnetPassword, generate: true }

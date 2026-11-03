@@ -1,0 +1,20 @@
+# The same server as freelancer-example.values.yaml, deployed with the
+# LANCommander container image instead of running FLServer.exe directly.
+
+spec: gsc/v0.1
+kind: ServerValues
+game: freelancer
+definitionId: gsc-examples/freelancer
+definitionVersion: 0.1.0
+id: sirius-lan-docker
+profile: lancommander-container
+fragments: []
+
+settings:
+  general:
+    name: "Sirius LAN Night"
+    description: "Open world, no PvP. Characters are wiped monthly."
+    maxPlayers: 32
+  rules:
+    allowNewPlayers: true
+    pvp: false

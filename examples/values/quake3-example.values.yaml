@@ -1,0 +1,52 @@
+# A values document for one Quake 3 server.
+
+spec: gsc/v0.1
+kind: ServerValues
+game: quake3
+definitionId: gsc-examples/quake3
+definitionVersion: 0.1.0
+id: frag-friday
+fragments: []
+
+settings:
+  general:
+    hostname: "^1Frag ^7Friday"
+    maxClients: 16
+    public: true
+  mod:
+    fsGame: baseq3
+  match:
+    gametype: 0
+    fragLimit: 30
+    timeLimit: 10
+  maps:
+    rotation:
+      - { map: q3dm17 }
+      - { map: ztn3tourney1 }
+      - { map: q3ctf1, gametype: 4 }
+  bots:
+    minPlayers: 4
+    skill: 3
+  content:
+    pure: true
+    allowDownload: [1, 4]
+    downloadUrl: "https://dl.example.net/q3"
+  admin:
+    rconPassword: { $secret: admin.rconPassword, generate: true }
+    bans:
+      - { range: "203.0.113.0/24", note: "Repeated spam" }
+
+# Per-game-type and per-map overrides. A map beats a game type.
+overrides:
+  - when: { mode: 4 }               # capture the flag
+    settings:
+      match:
+        timeLimit: 20
+        captureLimit: 5
+
+  - when: { map: q3dm17 }           # small map: shorter matches, fewer bots
+    settings:
+      match:
+        fragLimit: 15
+      bots:
+        minPlayers: 2

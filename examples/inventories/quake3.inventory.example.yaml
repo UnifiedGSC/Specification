@@ -1,0 +1,72 @@
+# A ContentInventory: what a scan found on one server. Produced by whatever can
+# see the server — a panel agent with file access, or a live-state client that
+# only has RCON — and consumed by config UIs (optionsFrom) and validation rules.
+
+spec: gsc/v0.1
+kind: ContentInventory
+game: quake3
+server: frag-friday               # the values document this inventory belongs to
+scannedAt: "2026-10-30T22:15:00Z"
+context:
+  fsGame: baseq3                  # content depends on the loaded mod
+scans:
+  - via: files
+    completedAt: "2026-10-30T22:14:58Z"
+    roots: 4
+    archivesRead: 11
+  - via: console
+    command: "fdir *.bsp"
+    completedAt: "2026-10-30T22:15:00Z"
+
+maps:
+  - id: q3dm17
+    title: The Longest Yard
+    gametypes: [ffa, tourney]
+    origin: base
+    package: baseq3/pak0.pk3
+    root: "{paths.basepath}/baseq3"
+    preview: levelshots/q3dm17.jpg
+    clientDownload: none
+    discoveredBy: [files, console]
+
+  - id: q3ctf1
+    title: Dueling Keeps
+    gametypes: [ctf]
+    origin: base
+    package: baseq3/pak0.pk3
+    root: "{paths.basepath}/baseq3"
+    clientDownload: none
+    discoveredBy: [files, console]
+
+  - id: ztn3tourney1
+    title: Blood Run
+    gametypes: [tourney, ffa]
+    origin: addon
+    package: baseq3/ztn3tourney1.pk3
+    root: "{paths.basepath}/baseq3"
+    sha256: "<hash of the pk3>"
+    clientDownload: required
+    discoveredBy: [files, console]
+
+  - id: hub3aeroq3
+    # Found by the console listing only: on disk in a pk3 the agent could not
+    # read (permissions), so it has no title or game types.
+    origin: addon
+    clientDownload: required
+    discoveredBy: [console]
+
+  - id: pro-q3dm6
+    title: "Pro: The Campgrounds"
+    gametypes: [ffa, tourney]
+    origin: addon
+    package: baseq3/map-pro-q3dm6.pk3
+    root: "{paths.homepath}/baseq3"
+    clientDownload: required
+    # Added after the server started: on disk, but the running server has not
+    # indexed it yet, so the console listing missed it. Usable after a restart.
+    discoveredBy: [files]
+    loaded: false
+
+mods:
+  - { id: cpma, title: "Challenge ProMode Arena", packages: 3 }
+  - { id: osp,  packages: 1 }

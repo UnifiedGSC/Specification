@@ -1,0 +1,80 @@
+# An AccessPolicy: who may see and change what. Written by a panel or hosting
+# provider, not by game definition authors: the same Minecraft definition is
+# used under a "Standard" plan here and under a self-hosted admin's own policy.
+#
+# Access levels, least to most:
+#   hidden     not shown at all
+#   view       shown, read-only
+#   writeOnly  may be set, never read back (credentials can never go above this)
+#   confirm    may be changed after an explicit confirmation
+#   edit       may be changed
+#
+# A setting's access: its bySetting entry if any, else the MOST restrictive
+# rule among its classes, else the role's default. Limits only narrow what the
+# definition allows; they can never widen it.
+#
+# Pterodactyl/Pelican eggs map onto this: user_viewable: false -> hidden,
+# user_editable: false -> view.
+
+spec: gsc/v0.1
+kind: AccessPolicy
+id: example-host-standard-plan
+
+roles:
+  customer:
+    settings:
+      default: edit
+      byClass:
+        infrastructure: view        # ports, bind addresses, paths: assigned by the panel
+        security: view              # e.g. Minecraft online-mode, RCON, Satisfactory localhost bypass
+        derived: view
+        credential: writeOnly
+        destructive: confirm        # only affects new worlds; may mean a wipe
+        resource: edit              # within the limits below
+        identity: edit
+        content: edit
+      limits:
+        minecraft-java:
+          general.maxPlayers:      { maximum: 16 }
+          gameplay.viewDistance:   { maximum: 12 }
+          gameplay.simulationDistance: { maximum: 10 }
+        counter-strike-source:
+          general.maxPlayers:      { maximum: 16 }
+          bots.quota:              { maximum: 8 }
+        satisfactory:
+          general.maxPlayers:      { maximum: 8 }
+      bySetting:
+        counter-strike-source:
+          content.downloadUrl: hidden   # the panel runs FastDL for customers
+    actions:
+      restart: allow
+      restartWithPlayersOnline: confirm
+      recreate: confirm
+      deferredApply: allow
+      import: deny                  # imports can bring in values outside the plan
+      confirmManualTask: allow
+      editOverrides: allow
+      editProcesses: deny
+      editRaw: deny                 # raw values bypass classes and limits
+      editSecretRefs: deny          # customers set secrets; only staff choose where they live
+    state: { personal: view }       # their own players' IDs, addresses and chat
+
+  viewer:                           # e.g. a clan member who can look but not touch
+    settings:
+      default: view
+      byClass:
+        credential: hidden
+    state: { personal: hidden }     # player counts and names, but no IDs, addresses or chat
+    actions:
+      all: deny
+
+  operator:                         # hosting staff
+    overrideLocks: true
+    state: { personal: view }
+    settings:
+      default: edit
+      byClass:
+        credential: writeOnly
+        derived: view
+    actions:
+      all: allow

@@ -1,0 +1,653 @@
+# =============================================================================
+# Quake III Arena (ioquake3 dedicated server) — reference game definition
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Third worked example, focused on CONTENT DISCOVERY. Spec features this file
+# introduces:
+#   - a `content` section: typed content (maps, mods) found by scanning files,
+#     looking inside archives, and running server commands that list content
+#   - search roots with an order that depends on a setting (fs_game)
+#   - settings that validate against the content inventory
+#     (a CTF rotation may only contain maps that support CTF)
+#   - a map rotation written as a vstr chain, not a list file
+#   - bitmask settings (sv_allowDownload)
+#   - console-only settings: bans exist only as commands the server persists
+#
+# Items marked `# verify` come from community documentation or memory and must
+# be checked on a live server before this is published.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/quake3
+  version: 0.1.1
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+
+game:
+  id: quake3
+  name: "Quake III Arena"
+  match:                            # how a panel recognizes an install; Steam app IDs count too
+    files: [baseq3/pak0.pk3, [ioq3ded.x86_64, ioq3ded.exe, ioq3ded]]   # each entry must exist; a list inside means any one of them   # verify
+  engine: id-tech-3
+  implementation: ioquake3          # other engines (e.g. Quake3e) may differ
+  platforms: [linux, windows, macos]
+
+# -----------------------------------------------------------------------------
+# Paths. id Tech 3 merges a read-only install (basepath) with a writable
+# per-user directory (homepath) into one virtual filesystem.
+# -----------------------------------------------------------------------------
+paths:
+  basepath:
+    setting: storage.basePath
+    default: { all: "{installDir}" }
+  homepath:
+    setting: storage.homePath
+    default:
+      linux: "~/.q3a"                               # verify
+      macos: "~/Library/Application Support/Quake3" # verify
+      windows: "%APPDATA%\\Quake3"                  # verify
+
+# -----------------------------------------------------------------------------
+# Ports. Game traffic, server queries and RCON all share one UDP port.
+# -----------------------------------------------------------------------------
+ports:
+  game:
+    purpose: game
+    protocol: udp
+    default: 27960
+    setting: network.port
+    exposure: public
+    speaks: [quake3-query, quake3-rcon]   # getinfo/getstatus and rcon packets
+
+console:
+  protocol: quake3-rcon             # UDP out-of-band packets on the game port
+  port: game
+  password: admin.rconPassword
+
+# -----------------------------------------------------------------------------
+# Targets
+# -----------------------------------------------------------------------------
+raw:
+  deny: [quit, killserver, rcon, dedicated]   # dedicated 0 would start a client
+  # net_port, net_ip and fs_game are modeled, so raw entries for them are refused without listing them
+
+targets:
+  commandLine:
+    type: args
+    # ioq3ded +set dedicated 2 +set net_port 27960 +set fs_game cpma +exec server.cfg
+    style: q3                       # "+set name value" for cvars, "+cmd args" for commands
+    fixed: ["+exec", "server.cfg"]  # last, so the config sees command-line cvars
+    fixedPosition: end
+    booleans: ["1", "0"]
+
+  serverCfg:
+    type: file
+    path: "{paths.basepath}/{settings.mod.fsGame}/server.cfg"
+    format: q3-cfg                  # lines of: seta name "value"   // comments preserved
+    booleans: ["1", "0"]
+    executes: onStart               # id Tech 3 does not re-run it on map change;
+                                    # an adapter may send `exec server.cfg` instead
+
+  rotation:
+    type: generated
+    within: serverCfg               # emitted as a managed block inside server.cfg
+    format: q3-vstr-rotation
+    import:
+      parser: q3-vstr-chain       # follow any hand-written chain from its top-level vstr
+      extractOverrides: map       # per-entry cvar sets become per-map overrides
+    # For entries e1..eN this produces:
+    #   set gsc_m1 "set g_gametype 4; map q3ctf1; set nextmap vstr gsc_m2"
+    #   ...
+    #   set gsc_mN "...; set nextmap vstr gsc_m1"
+    #   vstr gsc_m1                  // starts the first entry
+    variablePrefix: gsc_m
+
+  console:
+    type: console
+    booleans: ["1", "0"]
+
+# -----------------------------------------------------------------------------
+# Content: what is installed, how to find it, and what each item looks like.
+# A scan produces a ContentInventory document (see quake3.inventory.example.yaml).
+# -----------------------------------------------------------------------------
+content:
+  # Virtual filesystem search order, highest priority first. Later roots are
+  # shadowed by earlier ones; pk3s within a directory load in alphabetical order.
+  roots:
+    - "{paths.homepath}/{settings.mod.fsGame}"
+    - "{paths.basepath}/{settings.mod.fsGame}"
+    - "{paths.homepath}/baseq3"
+    - "{paths.basepath}/baseq3"
+
+  types:
+    maps:
+      title: Maps
+      fields:                        # JSON Schema for one inventory item
+        type: object
+        required: [id, origin]
+        properties:
+          id:        { type: string, description: "Name passed to the map command" }
+          title:     { type: string }
+          gametypes:
+            type: array
+            items: { enum: [single, ffa, tourney, ctf] }   # the values .arena files use
+          origin:    { enum: [base, addon] }
+          package:   { type: string, description: "Archive or file it came from" }
+          root:      { type: string }
+          sha256:    { type: string }
+          preview:   { type: string }
+          clientDownload: { enum: [none, required] }
+          discoveredBy:
+            type: array
+            items: { enum: [files, console] }
+          loaded:
+            type: boolean
+            description: "False when on disk but not yet indexed by the running server"
+
+      discover:
+        # 1. File scan: needs filesystem access (panel agent on the same host)
+        - via: files
+          kind: archive              # zip-format archive
+          glob: "{root}/*.pk3"
+          entries: "maps/*.bsp"
+          id: "{stem}"
+        - via: files
+          kind: files                # loose maps also load
+          glob: "{root}/maps/*.bsp"
+          id: "{stem}"
+
+        # 2. Server command: needs only RCON. Lists maps from every pk3 the
+        #    server indexed at startup, but carries no titles or game types.
+        - via: console
+          command: "fdir *.bsp"
+          parse:
+            line: '^maps/(?<id>[^/\s]+)\.bsp$'   # verify exact output format
+          reflects: loaded           # pk3s added while running may not appear until restart  # verify
+
+      metadata:
+        - from: { kind: archive, entries: "scripts/*.arena" }
+          parser: q3-arena           # { map q3dm1  longname "Arena Gate"  type "ffa tourney" }
+          match: map                 # joins to the item whose id equals the `map` field
+          fields:
+            title: longname
+            gametypes: { from: type, split: " " }
+        - from: { kind: archive, entries: "levelshots/{id}.*" }
+          field: preview
+
+      origin:
+        base: ["{paths.basepath}/baseq3/pak[0-8].pk3"]   # retail; everything else is addon
+      clientDownload:
+        required: "origin == 'addon'"
+
+    mods:
+      title: Mods
+      fields:
+        type: object
+        required: [id]
+        properties:
+          id:       { type: string, description: "Directory name, used as fs_game" }
+          title:    { type: string }
+          packages: { type: integer }
+      discover:
+        - via: files
+          kind: directories
+          glob: "{paths.basepath}/*/"
+          require: "*.pk3"           # only directories containing at least one pk3
+          exclude: [baseq3, missionpack]
+          id: "{name}"
+      metadata:
+        - from: { kind: file, path: "{item}/description.txt" }   # verify convention
+          field: title
+
+  refresh:
+    on: [start, schedule, request]
+    schedule: "PT6H"
+    cache: { key: [path, size, mtime], verify: sha256 }   # archives are slow to open
+  limits:                            # archives come from the internet: read, never execute
+    maxEntriesPerArchive: 20000
+    maxMetadataFileBytes: 1048576
+
+# -----------------------------------------------------------------------------
+# Scopes: settings that may differ per game type or per map.
+#
+# id Tech 3 does not re-run server.cfg on map change, so a cvar set for one map
+# stays set for the next (persistence: sticky). Overrides are therefore built
+# into the rotation itself: every generated entry sets the effective value of
+# EVERY setting that any override touches, so nothing leaks between maps.
+#   set gsc_m1 "set fraglimit 15; set timelimit 10; ...; map q3dm17; ..."
+# -----------------------------------------------------------------------------
+scopes:
+  kinds:
+    mode:
+      title: Game type
+      match: exact
+      key: { setting: match.gametype, entryField: gametype }   # a rotation entry may set its own
+    map:
+      title: Map
+      match: exact
+      optionsFrom: content.maps
+  precedence: [mode, map]
+  persistence: sticky
+  realize:
+    - via: generated
+      target: rotation              # emitted as `set <cvar> <value>;` in each entry
+
+# -----------------------------------------------------------------------------
+# Settings (JSON Schema)
+# -----------------------------------------------------------------------------
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    general:
+      title: General
+      type: object
+      properties:
+        hostname:
+          title: Server name
+          description: Supports Quake color codes such as ^1 for red.
+          type: string
+          pattern: '^[^"]*$'
+          default: "noname"                  # verify engine default
+          apply: live
+          write:
+            - { target: serverCfg, key: sv_hostname }
+            - { target: console,   key: sv_hostname }
+
+        motd:
+          title: Message of the day
+          type: string
+          pattern: '^[^"]*$'
+          default: ""
+          apply: live
+          write:
+            - { target: serverCfg, key: g_motd }
+            - { target: console,   key: g_motd }
+
+        maxClients:
+          title: Max players
+          type: integer
+          minimum: 1
+          maximum: 64                        # verify
+          default: 12
+          apply: nextMap                     # latched cvar   # verify
+          write:
+            - { target: serverCfg, key: sv_maxclients }
+            - { target: console,   key: sv_maxclients }
+
+        password:
+          title: Join password
+          type: string
+          writeOnly: true
+          pattern: '^[^"]*$'
+          default: ""
+          apply: live
+          write:
+            - { target: serverCfg, key: g_password }
+            - { target: console,   key: g_password }
+
+        public:
+          title: List on master servers
+          description: Off means LAN and connect-by-address only.
+          type: boolean
+          default: true
+          apply: restart
+          write:
+            - target: commandLine
+              cvar: dedicated
+              encode: { "true": 2, "false": 1 }   # dedicated 2 = public, 1 = LAN
+
+    network:
+      title: Network
+      type: object
+      scopes: []
+      properties:
+        port:
+          title: Port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 27960
+          apply: restart
+          write:
+            - { target: commandLine, cvar: net_port }
+
+        ip:
+          title: Bind address
+          type: string
+          format: ipv4
+          default: "0.0.0.0"
+          apply: restart
+          write:
+            - { target: commandLine, cvar: net_ip }
+
+    mod:
+      title: Mod
+      type: object
+      scopes: []
+      properties:
+        fsGame:
+          title: Mod directory
+          description: Loads a mod and changes which maps and settings are available.
+          type: string
+          optionsFrom: content.mods
+          allowCustom: false
+          default: baseq3
+          apply: restart
+          rescanContent: true                 # content roots depend on this value
+          write:
+            - { target: commandLine, cvar: fs_game, skipValue: baseq3 }
+
+    match:
+      title: Match rules
+      type: object
+      properties:
+        gametype:
+          title: Default game type
+          scopes: []
+          description: Used for rotation entries that do not set their own.
+          type: integer
+          oneOf:
+            - { const: 0, title: "Free for all",       arenaType: ffa }
+            - { const: 1, title: "Tournament (1v1)",   arenaType: tourney }
+            - { const: 3, title: "Team deathmatch",    arenaType: ffa }   # .arena has no team type; FFA maps are used
+            - { const: 4, title: "Capture the flag",   arenaType: ctf }
+            # 2 is single player and not valid on a dedicated server
+          default: 0
+          apply: nextMap
+          write:
+            - { target: serverCfg, key: g_gametype }
+            - { target: console,   key: g_gametype }
+
+        fragLimit:
+          title: Frag limit
+          type: integer
+          minimum: 0
+          default: 20
+          ui: { zeroMeans: "No limit" }
+          apply: live
+          write:
+            - { target: serverCfg, key: fraglimit }
+            - { target: console,   key: fraglimit }
+
+        timeLimit:
+          title: Time limit
+          type: integer
+          minimum: 0
+          default: 15
+          ui: { unit: minutes, zeroMeans: "No limit" }
+          apply: live
+          write:
+            - { target: serverCfg, key: timelimit }
+            - { target: console,   key: timelimit }
+
+        captureLimit:
+          title: Capture limit
+          type: integer
+          minimum: 0
+          default: 8
+          ui: { zeroMeans: "No limit", showWhen: "self.match.gametype == 4" }
+          apply: live
+          write:
+            - { target: serverCfg, key: capturelimit }
+            - { target: console,   key: capturelimit }
+
+        friendlyFire:
+          title: Friendly fire
+          type: boolean
+          default: false
+          ui: { showWhen: "self.match.gametype >= 3" }
+          apply: live
+          write:
+            - { target: serverCfg, key: g_friendlyFire }
+            - { target: console,   key: g_friendlyFire }
+
+        teamForceBalance:
+          title: Force team balance
+          type: boolean
+          default: true
+          ui: { showWhen: "self.match.gametype >= 3" }
+          apply: live
+          write:
+            - { target: serverCfg, key: g_teamForceBalance }
+            - { target: console,   key: g_teamForceBalance }
+
+        allowVote:
+          title: Allow player voting
+          type: boolean
+          default: true
+          apply: live
+          write:
+            - { target: serverCfg, key: g_allowvote }
+            - { target: console,   key: g_allowvote }
+
+    maps:
+      title: Maps
+      type: object
+      scopes: []
+      properties:
+        rotation:
+          title: Map rotation
+          description: The first entry is also the starting map.
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [map]
+            properties:
+              map:
+                type: string
+                optionsFrom: content.maps
+                optionsFilter: "item.gametypes.size() == 0 || entry.gametype == null || arenaType(entry.gametype) in item.gametypes"
+              gametype:
+                description: Overrides the default game type for this entry.
+                type: integer
+                enum: [0, 1, 3, 4]
+          ui: { widget: orderedList }
+          default:
+            - { map: q3dm17 }
+            - { map: q3dm6 }
+            - { map: q3dm13 }
+          apply: nextMap
+          write:
+            - target: rotation
+              entry: "{gametype? set g_gametype {gametype}; }map {map}"
+            - target: console        # redefine the chain on a running server
+              sendGenerated: rotation
+
+    bots:
+      title: Bots
+      type: object
+      properties:
+        enabled:
+          title: Enable bots
+          type: boolean
+          default: true
+          apply: restart                     # verify
+          write:
+            - { target: commandLine, cvar: bot_enable }
+
+        minPlayers:
+          title: Fill with bots up to
+          description: Bots join while there are fewer human players than this.
+          type: integer
+          minimum: 0
+          default: 0
+          apply: live
+          write:
+            - { target: serverCfg, key: bot_minplayers }
+            - { target: console,   key: bot_minplayers }
+
+        skill:
+          title: Bot skill
+          type: integer
+          oneOf:
+            - { const: 1, title: "I Can Win" }
+            - { const: 2, title: "Bring It On" }
+            - { const: 3, title: "Hurt Me Plenty" }
+            - { const: 4, title: "Hardcore" }
+            - { const: 5, title: "Nightmare!" }
+          default: 3
+          apply: live                        # applies to bots added afterwards
+          write:
+            - { target: serverCfg, key: g_spSkill }
+            - { target: console,   key: g_spSkill }
+
+    content:
+      title: Content and downloads
+      type: object
+      scopes: []
+      properties:
+        pure:
+          title: Pure server
+          description: Clients may only use pk3 files the server has.
+          type: boolean
+          default: true
+          apply: restart                     # verify (latched)
+          write:
+            - { target: serverCfg, key: sv_pure }
+
+        allowDownload:
+          title: Client downloads
+          type: array
+          uniqueItems: true
+          items:
+            type: integer
+            oneOf:
+              - { const: 1, title: "Allow downloads" }
+              - { const: 4, title: "Disable slow in-game (UDP) downloads" }
+              - { const: 8, title: "Keep players connected during HTTP downloads" }
+          ui: { widget: checkboxes }
+          default: [1]
+          apply: live
+          write:
+            - { target: serverCfg, key: sv_allowDownload, encode: bitmask }
+            - { target: console,   key: sv_allowDownload, encode: bitmask }
+
+        downloadUrl:
+          title: HTTP download URL
+          description: Clients append the mod folder and file name.
+          type: string
+          format: uri
+          default: ""
+          apply: live
+          write:
+            - { target: serverCfg, key: sv_dlURL }
+            - { target: console,   key: sv_dlURL }
+
+    admin:
+      title: Administration
+      type: object
+      scopes: []
+      properties:
+        rconPassword:
+          title: RCON password
+          type: string
+          writeOnly: true
+          pattern: '^[^"]*$'
+          default: ""
+          apply: live
+          reconnectsConsole: true
+          write:
+            - { target: serverCfg, key: rconPassword }
+            - { target: console,   key: rconPassword }
+
+        bans:
+          title: Banned address ranges
+          description: >-
+            Stored by the server in serverbans.dat. GSC can only change bans
+            through the console, so edits made while the server is stopped wait
+            until it is running.
+          kind: identityList
+          type: array
+          items:
+            type: object
+            required: [range]
+            properties:
+              range: { type: string, description: "IP or CIDR range, e.g. 203.0.113.0/24" }
+              note:  { type: string }
+          default: []
+          apply: live
+          persistedBy: game
+          pendingWhileStopped: true
+          write:
+            - target: console
+              add:    ["banaddr {range}"]
+              remove: ["bandel {range}"]     # verify: bandel may take a list index
+          read:
+            via: console
+            command: listbans                # verify
+            parse: { line: '^\s*(?<index>\d+)\s+(?<range>\S+)' }   # verify
+
+    storage:
+      title: Storage
+      type: object
+      scopes: []
+      properties:
+        basePath:
+          title: Install directory override
+          type: string
+          default: ""
+          apply: restart
+          write:
+            - { target: commandLine, cvar: fs_basepath, skipIfEmpty: true }
+        homePath:
+          title: User directory override
+          type: string
+          default: ""
+          apply: restart
+          write:
+            - { target: commandLine, cvar: fs_homepath, skipIfEmpty: true }
+
+# -----------------------------------------------------------------------------
+# Cross-field rules (CEL). `inventory` is the latest ContentInventory.
+# -----------------------------------------------------------------------------
+rules:
+  - rule: "self.maps.rotation.all(e, inventory.maps.exists(m, m.id == e.map))"
+    message: "A rotation map is not installed on the server."
+  - rule: >-
+      self.maps.rotation.all(e, inventory.maps.exists(m, m.id == e.map &&
+        (m.gametypes.size() == 0 ||
+         arenaType(has(e.gametype) ? e.gametype : self.match.gametype) in m.gametypes)))
+    message: "A rotation map does not list support for its game type."
+    severity: warning               # .arena metadata is often missing or incomplete
+  - rule: "self.content.downloadUrl == '' || 1 in self.content.allowDownload"
+    message: "An HTTP download URL has no effect while downloads are disabled."
+    severity: warning
+  - rule: "!self.content.pure || 1 in self.content.allowDownload || inventory.maps.all(m, m.origin == 'base')"
+    message: "Pure server with add-on maps and downloads off: players without those maps cannot join."
+    severity: warning
+
+functions:
+  arenaType:                        # maps g_gametype numbers to .arena type words
+    from: settings.match.gametype.oneOf
+    field: arenaType
+
+# -----------------------------------------------------------------------------
+# Import: the command line's +set runs before +exec server.cfg, so the config
+# file wins when both set a cvar.
+# -----------------------------------------------------------------------------
+import:
+  precedence: [commandLine, serverCfg, rotation]   # later wins
+
+# -----------------------------------------------------------------------------
+# Live state (gsc-state/v0.1). getstatus returns the server's cvars, so most
+# drift is visible without the console.
+# -----------------------------------------------------------------------------
+state:
+  ready:
+    any: [{ query: quake3-query }]
+  queries:
+    - { protocol: quake3-query, port: game, every: 15s }
+  reports:
+    general.hostname:   { from: quake3-query, field: sv_hostname }
+    general.maxClients: { from: quake3-query, field: sv_maxclients }
+    match.fragLimit:    { from: quake3-query, field: fraglimit }
+    match.gametype:     { from: quake3-query, field: g_gametype }
+    match.timeLimit:    { from: quake3-query, field: timelimit }
+    mod.fsGame:         { from: quake3-query, field: gamename }   # verify: some builds report it as fs_game

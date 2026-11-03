@@ -1,0 +1,40 @@
+# A Don't Starve Together cluster: an overworld shard and a caves shard on the
+# same host. Cluster settings sit under `settings`; each process has its own.
+
+spec: gsc/v0.1
+kind: ServerValues
+game: dont-starve-together
+definitionId: gsc-examples/dont-starve-together
+definitionVersion: 0.1.0
+id: Cluster_1
+
+settings:
+  gameplay:
+    gameMode: endless
+    maxPlayers: 8
+  network:
+    name: "Weekend Survivors"
+    password: { $secret: network.password }
+    token: { $secret: network.token }
+  cluster:
+    key: { $secret: cluster.key, generate: true }   # shared by the shards; any value works
+  admins:
+    list:
+      - { id: KU_abc123XY }
+  mods:
+    list:
+      - { id: "350811795" }
+      - { id: "2902364746", options: { mode: "Easy Cartography" } }
+
+processes:
+  - id: Master
+    role: master
+    host: 10.0.0.5
+    settings:
+      world:
+        preset: SURVIVAL_TOGETHER
+        overrides: { season_start: autumn }     # verify option name
+  - id: Caves
+    role: secondary
+    host: 10.0.0.5
+    settings: {}                                # role defaults: ports 10999/12346/10166, DST_CAVE

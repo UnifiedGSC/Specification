@@ -1,0 +1,81 @@
+# =============================================================================
+# Valheim — schema fragments contributed by mods
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Valheim mods run on BepInEx. Unlike SourceMod, BepInEx writes typed metadata
+# into every plugin's config file, so a fragment can be GENERATED from the
+# installed mods instead of hand-written. This tests a `generate` block: a
+# parser that turns config files into settings at discovery time.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: SchemaFragment
+id: bepinex-plugins
+extends: valheim
+name: BepInEx plugin settings
+detect:
+  file: BepInEx/core/BepInEx.dll          # verify
+
+generate:
+  from:
+    glob: "BepInEx/config/*.cfg"
+    exclude: ["BepInEx/config/BepInEx.cfg"]
+  parser: bepinex-config
+  # One settings group per file (group key = file stem); one setting per key.
+  # The parser maps BepInEx's own comment metadata to JSON Schema:
+  #   ## <text>                            -> description
+  #   # Setting type: Boolean|Int32|Single|String|<Enum>
+  #                                        -> type (boolean, integer, number, string)
+  #   # Default value: <v>                 -> default
+  #   # Acceptable value range: From a to b -> minimum, maximum
+  #   # Acceptable values: A, B, C          -> enum
+  #   [Section]                            -> nested object per INI section
+  # verify: exact comment wording against BepInEx 5 output
+  defaults:
+    apply: restart          # BepInEx reads config at load; some plugins hot-reload
+  target:
+    type: file
+    format: ini
+    path: "{source.path}"   # each generated setting writes back to its own file
+
+---
+# Example of what the generator produces for one plugin config.
+# Shown for review only; a real tool would emit this at discovery time.
+spec: gsc/v0.1
+kind: SchemaFragment
+id: bepinex-plugins.example-output
+extends: valheim
+name: "Generated: com.example.betterportals.cfg"
+generatedBy: bepinex-plugins
+
+targets:
+  betterPortals:
+    type: file
+    path: BepInEx/config/com.example.betterportals.cfg
+    format: ini
+
+settings:
+  properties:
+    com.example.betterportals:
+      title: com.example.betterportals
+      type: object
+      properties:
+        General:
+          type: object
+          properties:
+            AllowMetals:
+              description: Allow ore and metal through portals.
+              type: boolean
+              default: false
+              apply: restart
+              write:
+                - { target: betterPortals, section: General, key: AllowMetals }
+            MaxDistance:
+              description: Maximum distance between linked portals.
+              type: integer
+              minimum: 0
+              maximum: 10000
+              default: 0
+              apply: restart
+              write:
+                - { target: betterPortals, section: General, key: MaxDistance }

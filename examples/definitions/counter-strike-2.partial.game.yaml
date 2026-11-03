@@ -1,0 +1,171 @@
+# =============================================================================
+# Counter-Strike 2 — PARTIAL reference definition (Workshop content only)
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Tests content the SERVER FETCHES ITSELF. GSC writes Workshop IDs to the
+# command line; the server downloads them at startup. GSC learns what actually
+# arrived by asking the server (ds_workshop_listmaps), because nothing on the
+# GSC side downloaded it.
+#
+#   cs2 -dedicated +sv_setsteamaccount <GSLT> +host_workshop_collection 1092904694
+#
+# New format features:
+#   - `content.sources`: where fetched content comes from and who fetches it
+#     (`fetchedBy: server` here)
+#   - `kind: contentRef` settings: IDs of content to fetch, validated by source
+#   - fetch status in the inventory: requested -> ready, or missing when the
+#     server's own listing does not show an item after startup
+#   - `refreshOn`: when the server re-resolves content (a collection's contents
+#     change only on restart)
+#
+# Source: GameServerKings "How to add Steam Workshop maps for Counter-Strike 2".
+# Items marked `# verify` are from memory or flagged as unsettled there.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/counter-strike-2
+  version: 0.1.0
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+  status: partial                 # covers one feature, not the whole game
+partial: true
+
+game:
+  id: counter-strike-2
+  name: "Counter-Strike 2"
+  engine: source-2
+  steam:
+    appId: 730
+    dedicatedAppId: 730               # verify
+  platforms: [linux, windows]
+
+console:
+  protocol: source-rcon
+  port: game                           # verify
+  password: admin.rconPassword
+
+ports:
+  game: { purpose: game, protocol: both, default: 27015, exposure: public, speaks: [steam-a2s, source-rcon] }
+
+targets:
+  commandLine:
+    type: args
+    fixed: ["-dedicated"]
+  console:
+    type: console
+
+content:
+  sources:
+    workshop:
+      kind: steam-workshop
+      appId: 730
+      fetchedBy: server               # the server downloads; GSC only names the IDs
+      refreshOn: [start]              # collections re-resolve on restart; maps re-check on every host_workshop_map
+      clientsFetch: automatic         # players download the same content before spawning
+  types:
+    workshopMaps:
+      title: Workshop maps
+      fields:
+        type: object
+        required: [name]
+        properties:
+          name:      { type: string, description: "Map name as the server lists it" }
+          workshopId: { type: string }
+          fetch:
+            type: object
+            properties:
+              state: { enum: [requested, ready, missing, failed] }
+      discover:
+        - via: console
+          command: ds_workshop_listmaps
+          parse: { line: '^(?<name>\S+)' }   # verify output format; empty until a download succeeds
+          reflects: loaded
+
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    workshop:
+      title: Workshop
+      type: object
+      scopes: []
+      properties:
+        collection:
+          title: Workshop collection
+          description: >-
+            Downloads every map in the collection and builds the map group from
+            them. Overrides a configured start map and map group. Contents change
+            only when the server restarts.
+          kind: contentRef
+          source: workshop
+          type: string
+          pattern: '^([0-9]+)?$'       # empty = none
+          default: ""
+          apply: restart
+          write:
+            - { target: commandLine, arg: "+host_workshop_collection", skipIfEmpty: true }
+
+        map:
+          title: Single Workshop map
+          description: Used instead of a collection. Always pulls the latest published version.
+          kind: contentRef
+          source: workshop
+          type: string
+          pattern: '^([0-9]+)?$'       # empty = none
+          default: ""
+          apply: restart
+          write:
+            - { target: commandLine, arg: "+host_workshop_map", skipIfEmpty: true }
+
+        allowOtherMaps:
+          title: Let players load other Workshop maps while the server is empty
+          type: boolean
+          default: true
+          apply: live
+          write:
+            - { target: commandLine, arg: "+sv_workshop_allow_other_maps", encode: { "true": "1", "false": "0" } }
+            - { target: console, command: "sv_workshop_allow_other_maps {value}", encode: { "true": "1", "false": "0" } }
+
+    network:
+      title: Network
+      type: object
+      scopes: []
+      properties:
+        steamToken:
+          title: Game server login token (GSLT)
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: [{ target: commandLine, arg: "+sv_setsteamaccount", skipIfEmpty: true }]
+        webApiKey:
+          title: Steam Web API key
+          description: Only if Workshop downloads fail with a GSLT alone. Whether CS2 needs it is unsettled.
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: [{ target: commandLine, arg: "-authkey", skipIfEmpty: true }]
+
+    admin:
+      title: Administration
+      type: object
+      scopes: []
+      properties:
+        rconPassword:
+          title: RCON password
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: [{ target: commandLine, arg: "+rcon_password", skipIfEmpty: true }]
+
+rules:
+  - rule: "self.workshop.collection == '' || self.workshop.map == ''"
+    message: "Use a collection or a single map, not both."
+  - rule: "(self.workshop.collection == '' && self.workshop.map == '') || self.network.steamToken != ''"
+    message: "Workshop downloads need a game server login token."

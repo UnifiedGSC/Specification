@@ -1,0 +1,30 @@
+# A values document for one Valheim server.
+
+spec: gsc/v0.1
+kind: ServerValues
+game: valheim
+definitionId: gsc-examples/valheim
+definitionVersion: 0.1.0
+fragments: []
+
+settings:
+  general:
+    name: "Viking Friday"
+    password: { $secret: general.password }
+    public: true
+  network:
+    crossplay: true
+  world:
+    name: Midgard
+    preset: hard
+    modifiers:
+      raids: less
+      portals: casual
+    keys: [playerevents]
+  saves:
+    backups: 6
+  access:
+    admins:
+      - { id: "Steam_76561197960287930", note: "Owner" }
+    banned: []
+    permitted: []

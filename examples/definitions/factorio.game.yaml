@@ -1,0 +1,385 @@
+# =============================================================================
+# Factorio (headless server) — reference game definition
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Tests the `json` format.
+#
+#   { "name": "...", "visibility": { "public": true, "lan": true },
+#     "allow_commands": "admins-only", "_comment_...": "..." }
+#
+# Format behavior that shapes the definition:
+#   - nested objects, addressed with JSON Pointer (RFC 6901): /visibility/public.
+#     Dotted paths would be ambiguous because JSON keys may contain dots.
+#   - strict JSON: a trailing comma or missing brace stops the server from booting,
+#     so the writer re-parses its output before saving
+#   - Wube documents settings inline with "_comment_..." keys; the writer keeps
+#     them, and keeps key order, by editing the parsed document in place
+#   - allow_commands takes the STRINGS "true", "false" and "admins-only". In
+#     YAML these must be quoted, or a YAML 1.1 parser turns them into booleans.
+#   - the file is passed with --server-settings, so GSC keeps its own copy,
+#     seeded from Wube's example so the _comment_ documentation carries over
+#
+# Source: GameServerKings "Factorio server-settings.json: every setting
+# explained". Items marked `# verify` are from memory.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/factorio
+  version: 0.1.1
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+
+game:
+  id: factorio
+  name: Factorio
+  match:                            # how a panel recognizes an install; Steam app IDs count too
+    files: [[bin/x64/factorio, bin/x64/factorio.exe], data/base/info.json]   # each entry must exist; a list inside means any one of them   # verify
+  engine: factorio
+  platforms: [linux, windows, macos]
+  versions:
+    scheme: dotted
+    supported: ">=2.0"
+    detect:
+      - via: file
+        path: "{installDir}/data/base/info.json"   # verify
+        format: json
+        pointer: /version
+
+ports:
+  game:
+    purpose: game
+    protocol: udp
+    default: 34197                    # verify
+    setting: network.port
+    exposure: public
+  rcon:
+    purpose: rcon
+    protocol: tcp
+    setting: admin.rconPort           # no default; RCON is off unless a port is given
+    when: "self.admin.rconPort > 0 && self.admin.rconPassword != ''"
+    exposure: private
+    speaks: [source-rcon]             # verify
+
+console:
+  protocol: source-rcon
+  port: rcon
+  password: admin.rconPassword
+
+targets:
+  commandLine:
+    type: args
+    # factorio --start-server <save> --server-settings <file> --port 34197   # verify flags
+    fixed: ["--server-settings", "{targets.serverSettings.path}", "--server-adminlist", "{targets.adminList.path}"]
+
+  serverSettings:
+    type: file
+    path: "{installDir}/data/gsc-{server.id}.server-settings.json"
+    seedFrom: "{installDir}/data/server-settings.example.json"
+    format: json
+    owner: gsc
+    indent: preserve                  # keep the template's indentation
+    preserveUnknownKeys: true         # including Wube's _comment_ keys, in order
+    verify: roundTrip                 # strict JSON: a malformed file stops the server
+
+  adminList:
+    type: file
+    path: "{installDir}/data/gsc-{server.id}.server-adminlist.json"
+    format: json                      # a JSON array of player names   # verify
+    owner: shared                     # /promote and /demote may rewrite it   # verify
+
+  modList:
+    type: file
+    path: "{installDir}/mods/mod-list.json"
+    format: json                      # {"mods": [{"name": "base", "enabled": true}, ...]}   # verify
+    owner: shared                     # the game also edits it
+
+# -----------------------------------------------------------------------------
+# Mods from the Factorio mod portal, fetched by the GSC agent: the headless
+# server does not download mods itself.   # verify
+#   GET https://mods.factorio.com/api/mods/{name}/full   -> releases[]
+#   download https://mods.factorio.com{download_url}?username=..&token=..
+#   check sha1, save as mods/{file_name}, enable it in mod-list.json
+# -----------------------------------------------------------------------------
+content:
+  sources:
+    modPortal:
+      kind: http-catalog
+      fetchedBy: agent
+      credentials: settings.visibility   # the same factorio.com username and token
+      resolve:
+        url: "https://mods.factorio.com/api/mods/{name}/full"
+        releases: releases
+        version: version
+        gameVersion: info_json.factorio_version   # e.g. "2.0"
+        matchGameVersion: "{game.version:2}"      # the detected version's first two segments
+        dependencies: info_json.dependencies
+      fetch:
+        url: "https://mods.factorio.com{release.download_url}?username={credentials.username}&token={credentials.token}"
+        checksum: { sha1: "{release.sha1}" }
+        saveAs: "{installDir}/mods/{release.file_name}"
+        limits: { maxBytes: 2000000000 }
+      update: pinnedOrLatest           # an item's `version` pins it; otherwise the latest compatible release
+      dependencies:
+        syntax: factorio               # "name >= 1.2", "? optional", "(?) hidden optional", "! incompatible", "~ no load order"   # verify
+        policy: addRequired            # required ones are added and enabled automatically
+        incompatible: error
+        builtIn: [base]                # always present; never fetched
+
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    mods:
+      title: Mods
+      type: object
+      scopes: []
+      properties:
+        list:
+          title: Mods
+          description: Fetched from the mod portal. Players get a prompt to download the same mods.   # verify
+          kind: contentRef
+          source: modPortal
+          type: array
+          items:
+            type: object
+            required: [name]
+            properties:
+              name:    { type: string, pattern: '^[A-Za-z0-9_-]+$' }
+              version: { type: string, pattern: '^[0-9]+\.[0-9]+\.[0-9]+$', description: "Pin a release; empty takes the latest compatible one" }
+              enabled: { type: boolean, default: true }
+          default: []
+          apply: restart
+          write:
+            - target: modList
+              pointer: /mods
+              items: { name: "{name}", enabled: "{enabled}" }
+              always: [{ name: base, enabled: true }]   # the base game stays enabled
+
+    general:
+      title: General
+      type: object
+      properties:
+        name:
+          title: Server name
+          type: string
+          minLength: 1
+          default: "Factorio Server"
+          apply: restart
+          write: [{ target: serverSettings, pointer: /name }]
+        description:
+          title: Description
+          type: string
+          maxLength: 5000
+          default: ""
+          ui: { widget: textarea }
+          apply: restart
+          write: [{ target: serverSettings, pointer: /description }]
+        tags:
+          title: Tags
+          type: array
+          items: { type: string }
+          default: []
+          apply: restart
+          write: [{ target: serverSettings, pointer: /tags }]
+        maxPlayers:
+          title: Max players
+          type: integer
+          minimum: 0
+          default: 0
+          ui: { zeroMeans: Unlimited }
+          apply: restart
+          write: [{ target: serverSettings, pointer: /max_players }]
+        gamePassword:
+          title: Join password
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: [{ target: serverSettings, pointer: /game_password }]
+
+    visibility:
+      title: Visibility
+      type: object
+      properties:
+        public:
+          title: List on the public server browser
+          description: Needs a factorio.com username and token.
+          type: boolean
+          default: true
+          apply: restart
+          write: [{ target: serverSettings, pointer: /visibility/public }]
+        lan:
+          title: Announce on the local network
+          type: boolean
+          default: true
+          apply: restart
+          write: [{ target: serverSettings, pointer: /visibility/lan }]
+        username:
+          title: factorio.com username
+          type: string
+          default: ""
+          apply: restart
+          write: [{ target: serverSettings, pointer: /username }]
+        token:
+          title: factorio.com token
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: [{ target: serverSettings, pointer: /token }]
+        requireUserVerification:
+          title: Require factorio.com accounts
+          type: boolean
+          default: true
+          apply: restart
+          write: [{ target: serverSettings, pointer: /require_user_verification }]
+
+    rules:
+      title: Rules
+      type: object
+      properties:
+        allowCommands:
+          title: Who may use console commands
+          type: string
+          oneOf:                       # strings, not booleans: quoted on purpose
+            - { const: "admins-only", title: Admins only }
+            - { const: "true",        title: Everyone }
+            - { const: "false",       title: Nobody }
+          default: "admins-only"
+          apply: restart
+          write: [{ target: serverSettings, pointer: /allow_commands }]
+        onlyAdminsCanPause:
+          title: Only admins can pause
+          type: boolean
+          default: true
+          apply: restart
+          write: [{ target: serverSettings, pointer: /only_admins_can_pause_the_game }]
+        autoPause:
+          title: Pause when nobody is online
+          type: boolean
+          default: true
+          apply: restart
+          write: [{ target: serverSettings, pointer: /auto_pause }]
+        afkAutokick:
+          title: Kick idle players after
+          type: integer
+          minimum: 0
+          default: 0
+          ui: { unit: minutes, zeroMeans: Never }
+          apply: restart
+          write: [{ target: serverSettings, pointer: /afk_autokick_interval }]
+
+    saves:
+      title: Saving
+      type: object
+      properties:
+        autosaveInterval:
+          title: Autosave interval
+          type: integer
+          minimum: 1
+          default: 10                  # verify
+          ui: { unit: minutes }
+          apply: restart
+          write: [{ target: serverSettings, pointer: /autosave_interval }]
+        autosaveSlots:
+          title: Autosave slots
+          type: integer
+          minimum: 1
+          default: 5
+          apply: restart
+          write: [{ target: serverSettings, pointer: /autosave_slots }]
+
+    network:
+      title: Network
+      type: object
+      scopes: []
+      properties:
+        port:
+          title: Port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 34197
+          apply: restart
+          write: [{ target: commandLine, arg: "--port" }]
+        maxUploadKbps:
+          title: Upload limit
+          type: integer
+          minimum: 0
+          default: 0
+          ui: { unit: "KB/s", zeroMeans: Unlimited }
+          apply: restart
+          write: [{ target: serverSettings, pointer: /max_upload_in_kilobytes_per_second }]
+
+    admin:
+      title: Administration
+      type: object
+      scopes: []
+      properties:
+        admins:
+          title: Admins
+          kind: identityList
+          type: array
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: { type: string, minLength: 1 }
+          default: []
+          apply: restart
+          write:
+            - target: adminList
+              pointer: ""
+              items: "{name}"           # the file is a plain array of names   # verify
+        rconPort:
+          title: RCON port
+          description: 0 disables RCON.
+          type: integer
+          minimum: 0
+          maximum: 65535
+          default: 0
+          apply: restart
+          write: [{ target: commandLine, arg: "--rcon-port", skipIfDefault: true }]
+        rconPassword:
+          title: RCON password
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: [{ target: commandLine, arg: "--rcon-password", skipIfEmpty: true }]
+
+rules:
+  - rule: "!self.visibility.public || (self.visibility.username != '' && self.visibility.token != '')"
+    message: "Public listing needs a factorio.com username and token."
+  - rule: "self.admin.rconPort == 0 || self.admin.rconPassword != ''"
+    message: "Set an RCON password when RCON is enabled."
+
+# -----------------------------------------------------------------------------
+# Live state (gsc-state/v0.1). Factorio answers no LAN query protocol; RCON and
+# the log carry everything.
+# -----------------------------------------------------------------------------
+state:
+  ready:
+    any: [{ log: 'changing state from\(CreatingGame\) to\(InGame\)' }]   # verify
+  console:
+    players:
+      command: /players online                     # a plain command: does not disable achievements
+      every: 60s
+      visibleToPlayers: false
+      parse:
+        - line: '^Online players \((?<online>\d+)\):'
+          into: { players.online: online }
+        - line: '^\s+(?<name>\S+) \(online\)$'
+          each: players.list
+          fields: { name: name }
+  logs:
+    source: { stdout: true }
+    events:
+      player.joined: '\[JOIN\] (?<name>\S+) joined the game'
+      player.left:   '\[LEAVE\] (?<name>\S+) left the game'
+      chat:          '\[CHAT\] (?<name>\S+): (?<message>.*)$'

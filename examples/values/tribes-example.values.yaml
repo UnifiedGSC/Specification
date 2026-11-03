@@ -1,0 +1,27 @@
+# A values document for one Tribes server. The id also names its overlay
+# script: config/gsc-lan-ctf.cs, launched with `+exec gsc-lan-ctf`.
+
+spec: gsc/v0.1
+kind: ServerValues
+game: starsiege-tribes
+definitionId: gsc-examples/tribes
+definitionVersion: 0.1.0
+id: lan-ctf
+fragments: []
+
+settings:
+  general:
+    hostName: "LAN Party CTF"
+    info: "Admin: Pat, pat@example.com"
+    joinMotd: "Welcome! Say \"gg\" at the end of each map."
+    maxPlayers: 20
+    public: false
+  network:
+    port: 28001
+  match:
+    timeLimit: 30
+    teams:
+      - { name: "Blood Eagle",   skinBase: beagle }
+      - { name: "Diamond Sword", skinBase: dsword }
+  admin:
+    adminPassword: { $secret: admin.adminPassword, generate: true }

@@ -1,0 +1,443 @@
+# =============================================================================
+# Don't Starve Together — reference game definition
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Tests MULTI-PROCESS servers. One DST "server" is a cluster of shard
+# processes, typically the overworld (Master) and Caves, each started
+# separately and each with its own ports:
+#
+#   Cluster_1/cluster.ini              shared by every shard
+#   Cluster_1/cluster_token.txt        shared
+#   Cluster_1/adminlist.txt            shared
+#   Cluster_1/Master/server.ini        one per shard
+#   Cluster_1/Master/worldgenoverride.lua    world settings, per shard (Lua)
+#   Cluster_1/Master/modoverrides.lua        mod settings, per shard (Lua)
+#   <install>/mods/dedicated_server_mods_setup.lua   shared by every cluster on the install
+#
+# New format features:
+#   - `processes`: roles a process can have, how many of each, start order
+#   - `perProcess` on groups and targets: one value and one file per process;
+#     cluster settings written to a per-process target go into every copy
+#   - `processDefaults`: defaults that depend on the process's role
+#   - target `ensure` with process context ({process.id}, {process.isMaster})
+#   - restart scope derived from targets: a per-process file restarts only that
+#     process; a shared file restarts all of them
+#   - a `lua-table` format for data-only Lua files (return { ... })
+#
+# Sources: Don't Starve Wiki "Guides/Simple Dedicated Server Setup" and
+# "Guides/Don't Starve Together Dedicated Servers". Items marked `# verify` are
+# from memory.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/dont-starve-together
+  version: 0.1.1
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+
+game:
+  id: dont-starve-together
+  name: "Don't Starve Together"
+  engine: dst
+  steam:
+    appId: 322330             # verify
+    dedicatedAppId: 343050    # verify
+  platforms: [linux, windows, macos]
+
+# -----------------------------------------------------------------------------
+# Processes
+# -----------------------------------------------------------------------------
+processes:
+  roles:
+    master:
+      title: Overworld (master shard)
+      count: { min: 1, max: 1 }
+    secondary:
+      title: Additional shard (usually Caves)
+      count: { min: 0 }
+  startOrder: [master, secondary]     # secondaries connect to the master   # verify whether required
+  # Shards may run on different hosts; a values document gives each process a
+  # `host`, and the master's address is derived for the others.
+  idPattern: '^[A-Za-z0-9_]+$'        # also the shard's folder and -shard name
+
+paths:
+  cluster:
+    default: { all: "{dataDir}/{server.id}" }       # {dataDir}: the persistent storage root
+  shard:
+    default: { all: "{paths.cluster}/{process.id}" }
+
+ports:
+  game:
+    purpose: game
+    protocol: udp
+    perProcess: true
+    setting: shard.port
+    exposure: public
+  steamMaster:
+    purpose: query
+    protocol: udp
+    perProcess: true
+    setting: shard.steamMasterPort
+    exposure: public
+  steamAuth:
+    purpose: game
+    protocol: udp
+    perProcess: true
+    setting: shard.steamAuthPort
+    exposure: public
+  shardLink:
+    purpose: game                     # shards talk to the master here
+    protocol: udp                     # verify
+    processRole: master               # only the master listens
+    setting: cluster.masterPort
+    when: "processes.size() > 1"
+    exposure: private                 # public only when shards run on other hosts
+
+console: none                          # each shard has a local console only
+
+# -----------------------------------------------------------------------------
+# Targets
+# -----------------------------------------------------------------------------
+targets:
+  commandLine:
+    type: args
+    perProcess: true
+    # dontstarve_dedicated_server_nullrenderer -console -cluster <cluster> -shard <shard>   # verify
+    fixed: ["-console", "-cluster", "{server.id}", "-shard", "{process.id}"]
+
+  clusterIni:
+    type: file
+    path: "{paths.cluster}/cluster.ini"
+    format: ini
+    owner: gsc
+    booleans: ["true", "false"]
+    ensure:
+      # Sharding is on exactly when there is more than one process.
+      - { section: SHARD, key: shard_enabled, value: "{processes.count > 1}" }
+
+  clusterToken:
+    type: file
+    path: "{paths.cluster}/cluster_token.txt"
+    format: text
+    owner: gsc
+
+  adminList:
+    type: file
+    path: "{paths.cluster}/adminlist.txt"
+    format: lines
+
+  serverIni:
+    type: file
+    perProcess: true
+    path: "{paths.shard}/server.ini"
+    format: ini
+    owner: gsc
+    booleans: ["true", "false"]
+    ensure:
+      - { section: SHARD, key: is_master, value: "{process.isMaster}" }
+      - { section: SHARD, key: name,      value: "{process.id}" }
+      - { section: SHARD, key: id,        value: "{process.number}" }   # 1 for the first process
+      - { section: ACCOUNT, key: encode_user_path, value: "true" }
+
+  worldgen:
+    type: file
+    perProcess: true
+    path: "{paths.shard}/worldgenoverride.lua"
+    format: lua-table
+    header: "KLEI     1 "              # as in the wiki's template   # verify whether required
+    owner: gsc
+    ensure:
+      - { key: override_enabled, value: true }
+
+  modOverrides:
+    type: file
+    perProcess: true                  # one copy per shard; the content is the same in each
+    path: "{paths.shard}/modoverrides.lua"
+    format: lua-table
+    owner: gsc
+
+  modSetup:
+    type: file
+    scope: install                    # global to the install: every cluster on it shares this file
+    path: "{installDir}/mods/dedicated_server_mods_setup.lua"
+    format: lines
+    owner: shared
+
+# -----------------------------------------------------------------------------
+# Mods: the server downloads Workshop mods listed in dedicated_server_mods_setup.lua
+# when it starts, and updates them when their Workshop version changes.
+# -----------------------------------------------------------------------------
+content:
+  sources:
+    workshop:
+      kind: steam-workshop
+      appId: 322330                   # verify
+      fetchedBy: server
+      refreshOn: [start]
+      warnings:
+        - "Sharing a mod directory between shards (-ugc_directory) can race when shards start at the same time."
+
+# -----------------------------------------------------------------------------
+# Settings. Groups marked perProcess hold one value per process; everything
+# else is shared by the whole cluster.
+# -----------------------------------------------------------------------------
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    gameplay:
+      title: Gameplay
+      type: object
+      properties:
+        gameMode:
+          title: Game mode
+          type: string
+          enum: [survival, endless, wilderness]
+          default: survival
+          apply: restart
+          write: [{ target: clusterIni, section: GAMEPLAY, key: game_mode }]
+        maxPlayers:
+          title: Max players
+          type: integer
+          minimum: 1
+          maximum: 64                   # verify
+          default: 6                    # verify
+          apply: restart
+          write: [{ target: clusterIni, section: GAMEPLAY, key: max_players }]
+        pvp:
+          title: Player versus player
+          type: boolean
+          default: false
+          apply: restart
+          write: [{ target: clusterIni, section: GAMEPLAY, key: pvp }]
+        pauseWhenEmpty:
+          title: Pause when nobody is online
+          type: boolean
+          default: true
+          apply: restart
+          write: [{ target: clusterIni, section: GAMEPLAY, key: pause_when_empty }]
+
+    network:
+      title: Network
+      type: object
+      properties:
+        name:
+          title: Cluster name
+          type: string
+          minLength: 1
+          default: "My DST Server"
+          apply: restart
+          write: [{ target: clusterIni, section: NETWORK, key: cluster_name }]
+        description:
+          title: Description
+          type: string
+          default: ""
+          apply: restart
+          write: [{ target: clusterIni, section: NETWORK, key: cluster_description }]
+        password:
+          title: Join password
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: [{ target: clusterIni, section: NETWORK, key: cluster_password }]
+        offline:
+          title: Offline (LAN only, no Klei accounts)
+          type: boolean
+          default: false
+          apply: restart
+          write: [{ target: clusterIni, section: NETWORK, key: offline_cluster }]
+        whitelistSlots:
+          title: Reserved whitelist slots
+          type: integer
+          minimum: 0
+          default: 0
+          apply: restart
+          write: [{ target: clusterIni, section: NETWORK, key: whitelist_slots }]
+        token:
+          title: Cluster token
+          description: Generated in the game client with TheNet:GenerateClusterToken(). Do not share it.
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: [{ target: clusterToken }]
+
+    cluster:
+      title: Shard links
+      type: object
+      scopes: []
+      properties:
+        key:
+          title: Cluster key
+          description: Shared secret the shards use to authenticate to each other.
+          type: string
+          writeOnly: true
+          minLength: 1
+          default: "<required>"
+          apply: restart
+          write: [{ target: clusterIni, section: SHARD, key: cluster_key }]
+        masterPort:
+          title: Shard link port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 10888                # verify
+          apply: restart
+          write: [{ target: clusterIni, section: SHARD, key: master_port }]
+        masterIp:
+          title: Master shard address
+          description: Derived from the master process's host when shards run on different hosts.
+          type: string
+          default: "127.0.0.1"
+          # Filled in by the adapter, never typed: loopback when every shard shares a host.
+          derivedFrom: "processes.all(p, p.host == processes[0].host) ? '127.0.0.1' : processes.filter(p, p.role == 'master')[0].host"
+          apply: restart
+          write: [{ target: clusterIni, section: SHARD, key: master_ip }]
+        bindIp:
+          title: Shard link bind address
+          type: string
+          default: "127.0.0.1"
+          derivedFrom: "processes.all(p, p.host == processes[0].host) ? '127.0.0.1' : '0.0.0.0'"
+          apply: restart
+          write: [{ target: clusterIni, section: SHARD, key: bind_ip }]
+
+    admins:
+      title: Admins
+      type: object
+      scopes: []
+      properties:
+        list:
+          title: Admins
+          kind: identityList
+          type: array
+          items:
+            type: object
+            required: [id]
+            properties:
+              id: { type: string, pattern: '^KU_[A-Za-z0-9_-]+$', description: "Klei user ID" }   # verify format
+          default: []
+          apply: restart
+          write: [{ target: adminList, line: "{id}" }]
+
+    mods:
+      title: Mods
+      type: object
+      scopes: []
+      properties:
+        list:
+          title: Mods
+          description: Every shard gets the same mods and options, as the wiki recommends.
+          kind: contentRef
+          source: workshop
+          type: array
+          items:
+            type: object
+            required: [id]
+            properties:
+              id:      { type: string, pattern: '^[0-9]+$' }
+              enabled: { type: boolean, default: true }
+              options: { type: object, description: "configuration_options, as the mod defines them" }
+          default: []
+          apply: restart
+          write:
+            - target: modSetup
+              line: 'ServerModSetup("{id}")'
+            - target: modOverrides            # cluster value, written into every shard's copy
+              pointer: ""
+              keyedBy: 'workshop-{id}'
+              items: { enabled: "{enabled}", configuration_options: "{options}" }
+
+    shard:
+      title: Shard
+      type: object
+      perProcess: true
+      scopes: []
+      properties:
+        port:
+          title: Game port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 10998
+          apply: restart
+          write: [{ target: serverIni, section: NETWORK, key: server_port }]
+        steamMasterPort:
+          title: Steam master server port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 27016
+          apply: restart
+          write: [{ target: serverIni, section: STEAM, key: master_server_port }]
+        steamAuthPort:
+          title: Steam authentication port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 8766
+          apply: restart
+          write: [{ target: serverIni, section: STEAM, key: authentication_port }]
+
+    world:
+      title: World
+      type: object
+      perProcess: true
+      scopes: []
+      properties:
+        preset:
+          title: World preset
+          type: string
+          enum: [SURVIVAL_TOGETHER, SURVIVAL_TOGETHER_CLASSIC, SURVIVAL_DEFAULT_PLUS, COMPLETE_DARKNESS, TERRARIA,
+                 DST_CAVE, DST_CAVE_PLUS, TERRARIA_CAVE]
+          default: SURVIVAL_TOGETHER
+          apply: worldCreate
+          storedIn: world
+          write: [{ target: worldgen, key: preset }]
+        overrides:
+          title: World generation overrides
+          description: Option names from Klei's list; not validated here.
+          type: object
+          additionalProperties: { type: string }
+          default: {}
+          apply: worldCreate
+          storedIn: world
+          write: [{ target: worldgen, key: overrides }]
+
+# Defaults that depend on the process's role. The wiki's examples use these
+# ports and presets for a second shard (Caves).
+processDefaults:
+  secondary:
+    shard.port: 10999
+    shard.steamMasterPort: 12346
+    shard.steamAuthPort: 10166
+    world.preset: DST_CAVE
+
+rules:
+  - rule: "self.cluster.key != '<required>' || processes.size() == 1"
+    message: "Shards need a cluster key to connect to each other."
+  - rule: "self.network.offline || self.network.token != ''"
+    message: "An online cluster needs a cluster token."
+  - rule: "processes.all(p, p.role == 'master' ? p.settings.world.preset in ['SURVIVAL_TOGETHER', 'SURVIVAL_TOGETHER_CLASSIC', 'SURVIVAL_DEFAULT_PLUS', 'COMPLETE_DARKNESS', 'TERRARIA'] : p.settings.world.preset in ['DST_CAVE', 'DST_CAVE_PLUS', 'TERRARIA_CAVE'])"
+    message: "Overworld presets belong on the master shard and cave presets on the others."
+    scope: processes
+
+# -----------------------------------------------------------------------------
+# Live state (gsc-state/v0.1). One state per shard: each process has its own
+# log, and the cluster's players are the union of its shards'.
+# -----------------------------------------------------------------------------
+state:
+  perProcess: true
+  ready:
+    any: [{ log: 'Sim paused' }]                    # the shard has loaded and waits for players   # verify
+  logs:
+    source: { file: "{paths.shard}/server_log.txt" }
+    events:
+      player.joined: '\[Join Announcement\] (?<name>.+)$'
+      player.left:   '\[Leave Announcement\] (?<name>.+)$'
+      world.saved:   'Serializing world'           # verify

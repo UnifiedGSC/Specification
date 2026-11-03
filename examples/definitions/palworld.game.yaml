@@ -1,0 +1,352 @@
+# =============================================================================
+# Palworld — reference game definition
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Sixth worked example: FORMATS NESTED INSIDE FORMATS. Every gameplay setting
+# lives inside ONE value of ONE INI key, written in Unreal Engine's struct text
+# syntax:
+#
+#   [/Script/Pal.PalGameWorldSettings]
+#   OptionSettings=(Difficulty=None,ExpRate=1.000000,ServerName="My Server",...)
+#
+# New format features:
+#   - `embedded` targets: a target that lives inside one key of another target,
+#     with its own format. Settings write to the embedded target like any other.
+#   - the `ue-struct` format: Unreal struct text (strings quoted, enum names bare,
+#     True/False, six-decimal floats, (lists) and nested (structs))
+#   - an explicit INI `section`, because Unreal section names contain dots and
+#     slashes, so "Section.Key" would be ambiguous
+#   - `verify: roundTrip`: the server silently discards a malformed block, so
+#     the adapter re-parses what it wrote before saving
+#   - `writeWhen: stopped`: the game rewrites the file on shutdown
+#   - `seedFrom`: a missing or empty file starts as a copy of the game's template
+#   - `shadowedBy`: a file whose presence makes this whole target ineffective
+#
+# Sources: GameServerKings "Configuring your Palworld server", Connect Hosting
+# "Palworld server settings not saving". Items marked `# verify` are not covered
+# there.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/palworld
+  version: 0.1.0
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+
+game:
+  id: palworld
+  name: Palworld
+  engine: unreal-5
+  steam:
+    appId: 1623730           # verify
+    dedicatedAppId: 2394010  # verify
+  platforms: [linux, windows]
+
+paths:
+  config:
+    default:
+      linux:   "{installDir}/Pal/Saved/Config/LinuxServer"
+      windows: "{installDir}\\Pal\\Saved\\Config\\WindowsServer"   # verify
+
+ports:
+  game:
+    purpose: game
+    protocol: udp
+    default: 8211
+    setting: network.port
+    exposure: public
+
+  query:
+    purpose: query
+    protocol: udp
+    default: 27015                    # verify
+    exposure: public
+    speaks: [steam-a2s]
+
+  rcon:
+    purpose: rcon
+    protocol: tcp
+    default: 25575
+    setting: admin.rconPort
+    when: "self.admin.rconEnabled"
+    exposure: private
+    speaks: [source-rcon]             # verify
+
+  api:
+    purpose: api
+    protocol: tcp
+    default: 8212
+    setting: admin.restApiPort
+    when: "self.admin.restApiEnabled"
+    exposure: private
+    speaks: [palworld-rest]
+
+# RCON offers commands such as saving, broadcasting and shutdown, but no way to
+# change settings, so every setting here applies on restart.
+console:
+  protocol: source-rcon
+  port: rcon
+  password: admin.adminPassword
+
+# -----------------------------------------------------------------------------
+# Targets
+# -----------------------------------------------------------------------------
+targets:
+  commandLine:
+    type: args
+    # PalServer.sh -port=8211    # verify flag spelling
+    style: equals                     # -name=value
+
+  settingsIni:
+    type: file
+    path: "{paths.config}/PalWorldSettings.ini"
+    format: ini
+    owner: shared                     # the game writes its in-memory values on shutdown
+    writeWhen: stopped                # edits made while running are lost
+    seedFrom: "{installDir}/DefaultPalWorldSettings.ini"   # when missing or empty   # verify path
+    shadowedBy:
+      # A world migrated from elsewhere may carry its own settings, which
+      # override this file completely while present.
+      glob: "{installDir}/Pal/Saved/SaveGames/0/*/WorldOption.sav"
+      message: "WorldOption.sav overrides PalWorldSettings.ini for this world."
+      resolve: deleteWithConfirmation # never automatic: back up and stop first
+
+  optionSettings:
+    type: embedded
+    within: settingsIni
+    section: "/Script/Pal.PalGameWorldSettings"
+    key: OptionSettings
+    format: ue-struct
+    preserveUnknownFields: true       # keep settings GSC does not model, in their order
+    preserveOrder: true               # guides advise against reordering keys
+    singleLine: true                  # a line break voids the whole block
+    verify: roundTrip                 # re-parse before saving; malformed = silent defaults
+
+# -----------------------------------------------------------------------------
+# Settings. Field names are written exactly as Palworld spells them.
+# `as` tells ue-struct how to encode a value where JSON types are ambiguous:
+#   name   = bare identifier (enums, list items)
+#   float  = six decimals (1.000000)
+#   string = double-quoted
+# -----------------------------------------------------------------------------
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    general:
+      title: General
+      type: object
+      properties:
+        serverName:
+          title: Server name
+          type: string
+          pattern: '^[^"]*$'                # verify how ue-struct escapes quotes
+          default: "Default Palworld Server"
+          apply: restart
+          write: [{ target: optionSettings, key: ServerName, as: string }]
+
+        description:
+          title: Description
+          type: string
+          pattern: '^[^"]*$'
+          default: ""
+          apply: restart
+          write: [{ target: optionSettings, key: ServerDescription, as: string }]   # verify key
+
+        password:
+          title: Join password
+          description: Empty means anyone can join.
+          type: string
+          writeOnly: true
+          pattern: '^[^"]*$'
+          default: ""
+          apply: restart
+          write: [{ target: optionSettings, key: ServerPassword, as: string }]
+
+        maxPlayers:
+          title: Max players
+          type: integer
+          minimum: 1
+          maximum: 32                       # verify
+          default: 32
+          apply: restart
+          write: [{ target: optionSettings, key: ServerPlayerMaxNum }]
+
+        crossplayPlatforms:
+          title: Crossplay platforms
+          type: array
+          uniqueItems: true
+          minItems: 1
+          items:
+            type: string
+            enum: [Steam, Xbox, PS5, Mac]
+          ui: { widget: checkboxes }
+          default: [Steam, Xbox, PS5, Mac]
+          apply: restart
+          write: [{ target: optionSettings, key: CrossplayPlatforms, as: name }]   # -> (Steam,Mac)
+
+    network:
+      title: Network
+      type: object
+      properties:
+        port:
+          title: Game port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 8211
+          apply: restart
+          write: [{ target: commandLine, arg: "-port" }]   # verify
+
+        publicPort:
+          title: Advertised port
+          description: The port players are told to connect to. Differs from the game port only behind port mapping.
+          type: integer
+          minimum: 1
+          maximum: 65535
+          default: 8211
+          apply: restart
+          write: [{ target: optionSettings, key: PublicPort }]
+
+        publicIp:
+          title: Advertised IP
+          description: Empty detects it automatically.
+          type: string
+          default: ""
+          apply: restart
+          write: [{ target: optionSettings, key: PublicIP, as: string }]
+
+    gameplay:
+      title: Gameplay
+      type: object
+      properties:
+        difficulty:
+          title: Difficulty preset
+          description: A named preset overrides the individual rates below; keep None to use them.
+          type: string
+          enum: [None, Casual, Normal, Hard]
+          default: None
+          apply: restart
+          write: [{ target: optionSettings, key: Difficulty, as: name }]
+
+        dayTimeSpeed:
+          title: Day speed
+          description: Higher means shorter days.
+          type: number
+          exclusiveMinimum: 0
+          default: 1.0
+          ui: { unit: "×" }
+          apply: restart
+          write: [{ target: optionSettings, key: DayTimeSpeedRate, as: float }]
+
+        nightTimeSpeed:
+          title: Night speed
+          type: number
+          exclusiveMinimum: 0
+          default: 1.0
+          ui: { unit: "×" }
+          apply: restart
+          write: [{ target: optionSettings, key: NightTimeSpeedRate, as: float }]   # verify key
+
+        expRate:
+          title: Experience rate
+          type: number
+          exclusiveMinimum: 0
+          default: 1.0
+          ui: { unit: "×" }
+          apply: restart
+          write: [{ target: optionSettings, key: ExpRate, as: float }]
+
+        palCaptureRate:
+          title: Pal capture rate
+          type: number
+          exclusiveMinimum: 0
+          default: 1.0
+          ui: { unit: "×" }
+          apply: restart
+          write: [{ target: optionSettings, key: PalCaptureRate, as: float }]
+
+        deathPenalty:
+          title: On death, drop
+          type: string
+          oneOf:
+            - { const: None,             title: Nothing }
+            - { const: Item,             title: "Items (not equipment)" }
+            - { const: ItemAndEquipment, title: "Items and equipment" }
+            - { const: All,              title: "Items, equipment and Pals" }
+          default: Item
+          apply: restart
+          write: [{ target: optionSettings, key: DeathPenalty, as: name }]
+
+        pvp:
+          title: Player versus player
+          type: boolean
+          default: false
+          apply: restart
+          write: [{ target: optionSettings, key: bIsPvP }]   # booleans encode as True/False
+
+    admin:
+      title: Administration
+      type: object
+      properties:
+        adminPassword:
+          title: Admin password
+          description: Needed for admin commands, RCON and REST API authentication.
+          type: string
+          writeOnly: true
+          pattern: '^[^"]*$'
+          default: ""
+          apply: restart
+          write: [{ target: optionSettings, key: AdminPassword, as: string }]
+
+        rconEnabled:
+          title: Enable RCON
+          type: boolean
+          default: false
+          apply: restart
+          write: [{ target: optionSettings, key: RCONEnabled }]
+
+        rconPort:
+          title: RCON port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 25575
+          apply: restart
+          write: [{ target: optionSettings, key: RCONPort }]
+
+        restApiEnabled:
+          title: Enable REST API
+          type: boolean
+          default: false
+          apply: restart
+          write: [{ target: optionSettings, key: RESTAPIEnabled }]
+
+        restApiPort:
+          title: REST API port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 8212
+          apply: restart
+          write: [{ target: optionSettings, key: RESTAPIPort }]
+
+# -----------------------------------------------------------------------------
+# Rules (CEL)
+# -----------------------------------------------------------------------------
+rules:
+  - rule: "!(self.admin.rconEnabled || self.admin.restApiEnabled) || self.admin.adminPassword != ''"
+    message: "RCON and the REST API authenticate with the admin password; set one first."
+  - rule: >-
+      self.gameplay.difficulty == 'None' ||
+      (self.gameplay.expRate == 1.0 && self.gameplay.palCaptureRate == 1.0 &&
+       self.gameplay.dayTimeSpeed == 1.0 && self.gameplay.nightTimeSpeed == 1.0)
+    message: "A named difficulty preset overrides the custom rates; set Difficulty to None to use them."
+    severity: warning
+  - rule: "self.admin.rconPort != self.admin.restApiPort"
+    message: "RCON and the REST API need different ports."

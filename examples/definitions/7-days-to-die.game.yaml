@@ -1,0 +1,268 @@
+# =============================================================================
+# 7 Days to Die (dedicated server) — reference game definition
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Tests the `xml` format, where values live in attributes, not element text:
+#
+#   <ServerSettings>
+#     <property name="ServerName" value="My Game Host"/>
+#   </ServerSettings>
+#
+# Format behavior that shapes the definition:
+#   - `keyed` XML: settings are elements identified by one attribute (name) with
+#     the value in another (value). Writes then just give a key, as in INI.
+#     Other XML games can use `xpath` writes instead.
+#   - comments, attribute order and unknown properties are preserved; a missing
+#     property is added next to its siblings, matching their indentation
+#   - values are XML-escaped (&, <, ", ')
+#   - Valve's guide advises never using the default config file, so GSC keeps
+#     its own copy, seeded from serverconfig.xml, and passes it with -configfile=
+#
+# Source: Valve Developer Community "7 Days to Die Dedicated Server".
+# Items marked `# verify` are from memory.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/7-days-to-die
+  version: 0.1.0
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+
+game:
+  id: 7-days-to-die
+  name: "7 Days to Die"
+  engine: unity
+  steam:
+    dedicatedAppId: 294420             # verify
+  platforms: [linux, windows]
+
+ports:
+  game:
+    purpose: game
+    protocol: tcp
+    default: 26900
+    setting: network.port
+    exposure: public
+  gameUdp:
+    purpose: game
+    protocol: udp
+    offset: { from: game, by: 0 }
+    count: 4                            # a block: 26900-26903
+    exposure: public
+  telnet:
+    purpose: rcon
+    protocol: tcp
+    default: 8081
+    setting: admin.telnetPort
+    when: "self.admin.telnetEnabled"
+    exposure: private
+    # With no password, telnet listens only on the loopback interface.
+    loopbackOnlyWhen: "self.admin.telnetPassword == ''"
+    speaks: [7dtd-telnet]
+  dashboard:
+    purpose: api
+    protocol: tcp
+    default: 8080
+    setting: admin.webDashboardPort
+    when: "self.admin.webDashboardEnabled"
+    exposure: private
+
+console:
+  protocol: 7dtd-telnet
+  port: telnet
+  password: admin.telnetPassword
+
+targets:
+  commandLine:
+    type: args
+    style: equals                       # -configfile=...
+    # 7DaysToDieServer -logfile <file> -quit -batchmode -nographics -configfile=<file> -dedicated
+    fixed: ["-quit", "-batchmode", "-nographics", "-configfile={targets.serverConfig.path}"]
+    fixedEnd: ["-dedicated"]            # must be the last option
+
+  serverConfig:
+    type: file
+    path: "{installDir}/gsc-{server.id}.serverconfig.xml"
+    seedFrom: "{installDir}/serverconfig.xml"
+    format: xml
+    owner: gsc
+    booleans: ["true", "false"]
+    keyed:
+      parent: /ServerSettings           # verify root element name
+      element: property
+      keyAttribute: name
+      valueAttribute: value
+    preserveComments: true
+    preserveUnknownElements: true
+
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    general:
+      title: General
+      type: object
+      properties:
+        serverName:
+          title: Server name
+          type: string
+          minLength: 1
+          default: "My Game Host"
+          apply: restart
+          write: [{ target: serverConfig, key: ServerName }]
+        description:
+          title: Description
+          type: string
+          default: "A 7 Days to Die server"
+          apply: restart
+          write: [{ target: serverConfig, key: ServerDescription }]
+        password:
+          title: Join password
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: [{ target: serverConfig, key: ServerPassword }]
+        visibility:
+          title: Server browser visibility
+          type: integer
+          oneOf:
+            - { const: 2, title: Public }
+            - { const: 1, title: Friends only }
+            - { const: 0, title: Not listed }
+          default: 2
+          apply: restart
+          write: [{ target: serverConfig, key: ServerVisibility }]
+        maxPlayers:
+          title: Max players
+          description: Only 8-player co-op is officially supported.
+          type: integer
+          minimum: 1
+          default: 8
+          apply: restart
+          write: [{ target: serverConfig, key: ServerMaxPlayerCount }]
+
+    world:
+      title: World
+      type: object
+      scopes: []
+      properties:
+        gameWorld:
+          title: World
+          description: Navezgane, RWG to generate one, or the name of an existing world.
+          type: string
+          examples: [Navezgane, RWG]
+          allowCustom: true
+          default: Navezgane
+          apply: restart
+          write: [{ target: serverConfig, key: GameWorld }]
+        gameName:
+          title: Game name
+          description: Names the save and seeds decorations.
+          type: string
+          minLength: 1
+          default: "My Game"
+          apply: restart
+          write: [{ target: serverConfig, key: GameName }]
+        seed:
+          title: Generation seed
+          description: Used only when the world is RWG.
+          type: string
+          default: asdf
+          apply: worldCreate
+          storedIn: world
+          write: [{ target: serverConfig, key: WorldGenSeed }]
+        size:
+          title: Generated world size
+          type: integer
+          minimum: 2048
+          maximum: 16384
+          default: 4096
+          apply: worldCreate
+          storedIn: world
+          write: [{ target: serverConfig, key: WorldGenSize }]
+        difficulty:
+          title: Difficulty
+          type: integer
+          oneOf:
+            - { const: 0, title: Scavenger }
+            - { const: 1, title: Adventurer }      # verify names 1-4
+            - { const: 2, title: Nomad }
+            - { const: 3, title: Warrior }
+            - { const: 4, title: Survivalist }
+            - { const: 5, title: Insane }
+          default: 1
+          apply: restart
+          write: [{ target: serverConfig, key: GameDifficulty }]
+
+    network:
+      title: Network
+      type: object
+      scopes: []
+      properties:
+        port:
+          title: Port
+          description: Uses this TCP port and a block of four UDP ports starting here. Avoid 27000-27099.
+          type: integer
+          minimum: 1024
+          maximum: 65532
+          default: 26900
+          apply: restart
+          write: [{ target: serverConfig, key: ServerPort }]
+
+    admin:
+      title: Administration
+      type: object
+      scopes: []
+      properties:
+        telnetEnabled:
+          title: Enable telnet console
+          type: boolean
+          default: true
+          apply: restart
+          write: [{ target: serverConfig, key: TelnetEnabled }]
+        telnetPort:
+          title: Telnet port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 8081
+          apply: restart
+          write: [{ target: serverConfig, key: TelnetPort }]
+        telnetPassword:
+          title: Telnet password
+          description: Empty means telnet only listens on this machine.
+          type: string
+          writeOnly: true
+          default: ""
+          apply: restart
+          write: [{ target: serverConfig, key: TelnetPassword }]
+        webDashboardEnabled:
+          title: Enable web dashboard
+          type: boolean
+          default: false
+          apply: restart
+          write: [{ target: serverConfig, key: WebDashboardEnabled }]
+        webDashboardPort:
+          title: Web dashboard port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 8080
+          apply: restart
+          write: [{ target: serverConfig, key: WebDashboardPort }]
+
+rules:
+  - rule: "!(self.network.port <= 27099 && self.network.port + 3 >= 27000)"
+    message: "Valve's guide says to avoid ports 27000-27099."
+    severity: warning
+  - rule: "self.world.gameWorld == 'RWG' || (self.world.seed == 'asdf' && self.world.size == 4096)"
+    message: "The seed and size only apply when the world is RWG."
+    severity: warning
+  - rule: "self.admin.telnetPort != self.admin.webDashboardPort"
+    message: "Telnet and the web dashboard need different ports."

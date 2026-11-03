@@ -1,0 +1,23 @@
+# A values document for one Palworld server.
+
+spec: gsc/v0.1
+kind: ServerValues
+game: palworld
+definitionId: gsc-examples/palworld
+definitionVersion: 0.1.0
+id: pal-friends
+fragments: []
+
+settings:
+  general:
+    serverName: "Pals & Friends"
+    password: { $secret: general.password }
+    maxPlayers: 16
+    crossplayPlatforms: [Steam, Mac]
+  gameplay:
+    expRate: 2.0
+    palCaptureRate: 1.5
+    deathPenalty: None
+  admin:
+    adminPassword: { $secret: admin.adminPassword, generate: true }
+    rconEnabled: true

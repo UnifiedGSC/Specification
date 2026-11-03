@@ -1,0 +1,26 @@
+spec: gsc/v0.1
+kind: ServerValues
+game: minecraft-java
+definitionId: gsc-examples/minecraft-java
+definitionVersion: 2.0.0
+id: mc-survival
+settings:
+  general:
+    motd: "§aFriday Survival§r: be kind = be welcome \\o/"
+    maxPlayers: 12
+  gameplay:
+    difficulty: hard
+    pvp: false
+    commandBlocks: true
+  world:
+    levelSeed: "-4172144997902289642"     # quoted: a seed is text, even when it looks numeric
+  access:
+    whitelistEnabled: true
+    whitelist:
+      - { name: Pat, uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5" }
+      - { name: NewFriend }                # no UUID yet: added through the console
+    ops:
+      - { name: Pat, uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", level: 4 }
+  admin:
+    enableRcon: true
+    rconPassword: { $secret: admin.rconPassword, generate: true }

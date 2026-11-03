@@ -1,0 +1,301 @@
+# =============================================================================
+# Freelancer (FLServer.exe) — reference game definition
+# Game Server Config Standard (GSC), draft v0.1
+#
+# Fourth worked example: settings stored OUTSIDE text config files.
+#   - FLServer.cfg is a 369-byte binary dump of the server's settings dialog
+#   - the Windows registry (here, a Wine prefix's registry) holds the EULA flag
+#   - a Windows-only server run on Linux through Wine, so paths and the
+#     registry live inside a Wine prefix
+#
+# New format features:
+#   - `layouts`: byte-level struct definitions for binary files and REG_BINARY data
+#   - `format: binary` file targets, written read-modify-write
+#   - `type: registry` targets with hive, key, value type and 32/64-bit view
+#   - `ensure`: values a target must always hold, not exposed as settings
+#   - `runtime`: native vs Wine, which paths and the registry depend on
+#
+# Layout source: LANCommander.Servers.Freelancer Documentation/Docker.md.
+# Items marked `# verify` are not documented there.
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/freelancer
+  version: 0.1.0
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+
+game:
+  id: freelancer
+  name: Freelancer
+  match:                            # how a panel recognizes an install; Steam app IDs count too
+    files: [EXE/FLServer.exe]   # each entry must exist; a list inside means any one of them   # verify
+  engine: freelancer             # Digital Anvil, DirectPlay 8 networking
+  platforms: [windows]           # Windows-only server binary
+
+# -----------------------------------------------------------------------------
+# Runtime: how a Windows-only server runs on each host OS. Paths and registry
+# targets resolve through this: natively on Windows, inside the prefix on Linux.
+# -----------------------------------------------------------------------------
+runtime:
+  windows: { kind: native }
+  linux:
+    kind: wine
+    prefix: "{paths.winePrefix}"
+    user: "{settings.runtime.wineUser}"
+    components: [directplay, mfc42]   # installed once with winetricks
+
+# -----------------------------------------------------------------------------
+# Profiles: one game, deployed in different ways. A target that names
+# profiles is only used in those; the values document picks one.
+#
+# The LANCommander container image configures Freelancer from environment
+# variables: its startup hook writes FLServer.cfg from FL_* and passes /p from
+# FL_PORT on every start. So in that profile GSC sets the environment and must
+# not write FLServer.cfg itself; the hook would overwrite it anyway.
+# Source: LANCommander.Servers.Freelancer README and Documentation/Docker.md.
+# -----------------------------------------------------------------------------
+profiles:
+  default: native
+  native:
+    title: FLServer.exe run directly (Windows, or Linux under Wine)
+  lancommander-container:
+    title: LANCommander container image
+    image: LANCommander.Servers.Freelancer
+
+paths:
+  winePrefix:
+    setting: runtime.winePrefix
+    default: { linux: "~/.wine" }
+  documents:
+    default:
+      windows: "%USERPROFILE%\\Documents"
+      linux: "{paths.winePrefix}/drive_c/users/{settings.runtime.wineUser}/Documents"
+  multiplayer:
+    default: { all: "{paths.documents}/My Games/Freelancer/Accts/MultiPlayer" }
+
+# -----------------------------------------------------------------------------
+# Ports. DirectPlay also opens dynamic UDP ports, so bridged container
+# networking is unreliable; macvlan/ipvlan or host networking works best.
+# -----------------------------------------------------------------------------
+ports:
+  game:
+    purpose: game
+    protocol: udp
+    default: 2302
+    setting: network.port
+    exposure: public
+    speaks: [directplay8]
+
+  enumeration:
+    purpose: query
+    protocol: udp
+    default: 6073                    # fixed: dpnsvr, forwards LAN search queries to the game port
+    exposure: public
+    speaks: [directplay8-enum]       # query packet 00 02 12 34 02 returns name and description
+
+  dynamic:
+    purpose: game
+    protocol: udp
+    dynamic: true                    # allocated by DirectPlay at runtime; no fixed number
+    exposure: public
+
+console: none                         # FLServer has a local GUI only; no remote console
+
+# -----------------------------------------------------------------------------
+# Binary layouts. Offsets are bytes from the start; strings are fixed-size
+# UTF-16LE buffers, null-terminated and zero-padded, so a 33-unit buffer holds
+# 32 characters.
+# -----------------------------------------------------------------------------
+layouts:
+  flserverCfg:
+    size: 369
+    byteOrder: little
+    fields:
+      version:         { offset: 0x000, type: int32, const: 3 }
+      serverName:      { offset: 0x004, type: utf16, units: 33 }
+      description:     { offset: 0x046, type: utf16, units: 129 }
+      password:        { offset: 0x148, type: utf16, units: 17 }
+      allowNewPlayers: { offset: 0x16A, type: bool8 }
+      internet:        { offset: 0x16B, type: bool8 }
+      maxPlayers:      { offset: 0x16C, type: int32 }
+      pvp:             { offset: 0x170, type: bool8 }
+
+# -----------------------------------------------------------------------------
+# Targets
+# -----------------------------------------------------------------------------
+targets:
+  commandLine:
+    type: args
+    profiles: [native]
+    # FLServer.exe /c /p2302    (/c = start hosting without the dialog,
+    #                            which needs FLServer.cfg to exist)
+    fixed: ["/c"]
+    workingDir: "{installDir}/EXE"
+
+  containerEnv:
+    type: env
+    profiles: [lancommander-container]
+    booleans: ["true", "false"]      # the image also accepts 1/0 and yes/no
+    changeRequires: recreate         # a container's environment is fixed when it is created
+
+  flserverCfg:
+    type: file
+    profiles: [native]
+    path: "{paths.multiplayer}/FLServer.cfg"
+    format: binary
+    layout: flserverCfg
+    readAt: start                    # read once at startup only
+    whenMissing: create              # zero-filled, then `const` fields written
+    preserveUnknownBytes: true       # read-modify-write: never rebuild from scratch
+    owner: shared                    # the server's own settings dialog also writes it;
+                                     # GSC values win at the next start
+
+  registry:
+    type: registry
+    profiles: [native]               # the image's hook accepts the EULA itself
+    hive: HKLM                       # verify
+    view: 32                         # 32-bit game: WOW6432Node on 64-bit Windows
+    readAt: start
+    access:
+      native: api                    # Windows registry API
+      wine: offline                  # edit the prefix's system.reg/user.reg while
+                                     # the server and wineserver are stopped
+    ensure:
+      # The Docker image accepts the EULA in the registry before first start.
+      # Its documentation does not name the key or value.   # verify both
+      - key: "<EULA key: verify>"
+        value: "<EULA value: verify>"
+        type: REG_DWORD
+        data: 1
+
+# -----------------------------------------------------------------------------
+# Settings (JSON Schema)
+# -----------------------------------------------------------------------------
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    general:
+      title: General
+      type: object
+      properties:
+        name:
+          title: Server name
+          type: string
+          minLength: 1
+          maxLength: 32
+          default: "Freelancer Server"
+          apply: restart
+          write:
+            - { target: flserverCfg, field: serverName }
+            - { target: containerEnv, var: FL_SERVER_NAME }
+
+        description:
+          title: Description
+          description: Shown in the server browser and returned to LAN search queries.
+          type: string
+          maxLength: 128
+          default: ""
+          ui: { widget: textarea }
+          apply: restart
+          write:
+            - { target: flserverCfg, field: description }
+            - { target: containerEnv, var: FL_DESCRIPTION }
+
+        password:
+          title: Join password
+          type: string
+          maxLength: 16
+          writeOnly: true
+          default: ""
+          apply: restart
+          write:
+            - { target: flserverCfg, field: password }
+            - { target: containerEnv, var: FL_PASSWORD }
+
+        maxPlayers:
+          title: Max players
+          type: integer
+          minimum: 1
+          maximum: 128
+          default: 16
+          apply: restart
+          write:
+            - { target: flserverCfg, field: maxPlayers }
+            - { target: containerEnv, var: FL_MAX_PLAYERS }
+
+    rules:
+      title: Rules
+      type: object
+      properties:
+        allowNewPlayers:
+          title: Allow new players
+          description: Lets players create new accounts and characters.
+          type: boolean
+          default: true
+          apply: restart
+          write:
+            - { target: flserverCfg, field: allowNewPlayers }
+            - { target: containerEnv, var: FL_ALLOW_NEW_PLAYERS }
+
+        pvp:
+          title: Player versus player
+          description: Lets players harm each other.
+          type: boolean
+          default: false
+          apply: restart
+          write:
+            - { target: flserverCfg, field: pvp }
+            - { target: containerEnv, var: FL_PVP }
+
+    network:
+      title: Network
+      type: object
+      properties:
+        port:
+          title: Game port
+          type: integer
+          minimum: 1024
+          maximum: 65535
+          default: 2302
+          apply: restart
+          write:
+            - { target: commandLine, arg: "/p", joined: true }   # /p2302, no space
+            - { target: containerEnv, var: FL_PORT }
+
+        internet:
+          title: Register with the Microsoft lobby
+          description: The lobby service was retired long ago; leave off.
+          type: boolean
+          default: false
+          deprecated: true                 # JSON Schema: UIs may hide it
+          apply: restart
+          write:
+            - { target: flserverCfg, field: internet }
+            - { target: containerEnv, var: FL_INTERNET }
+
+    runtime:
+      title: Runtime
+      type: object
+      profiles: [native]             # the container manages its own Wine prefix
+      properties:
+        winePrefix:
+          title: Wine prefix
+          description: Linux only.
+          type: string
+          default: ""
+          apply: restart
+          write: []                        # used by paths, not written anywhere
+        wineUser:
+          title: Wine user name
+          description: Linux only. Decides where Documents is inside the prefix.
+          type: string
+          default: "{hostUser}"
+          apply: restart
+          write: []

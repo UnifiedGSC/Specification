@@ -1,0 +1,61 @@
+# A values document: one server's configuration, as a UI client would save it.
+# Only values that differ from the schema defaults need to appear.
+
+spec: gsc/v0.1
+kind: ServerValues
+game: counter-strike-source
+definitionId: gsc-examples/counter-strike-source
+definitionVersion: 0.1.0
+fragments: [sourcemod-admins]
+
+settings:
+  general:
+    hostname: "Friday Night Dust2 | 24/7"
+    maxPlayers: 20
+    region: 0
+  network:
+    steamToken: { $secret: network.steamToken }
+  maps:
+    startMap: de_dust2
+    rotation: [de_dust2]
+  rules:
+    timeLimit: 0
+    maxRounds: 30
+    roundTime: 1.75
+    freezeTime: 5
+  bots:
+    quota: 4
+    quotaMode: fill
+    difficulty: 2
+    chatter: "off"
+  sourcetv:
+    enabled: true
+  admin:
+    rconPassword: { $secret: admin.rconPassword, generate: true }
+    bannedIds:
+      - { id: "STEAM_0:1:12345678", note: "Cheating, 2026-10-12" }
+  sourcemod:
+    admins:
+      - { id: "STEAM_0:0:87654321", immunity: 99, flags: z }
+
+# Per-map overrides. Only the settings listed change; everything else comes
+# from `settings`. The most specific match wins: a map beats a map prefix.
+overrides:
+  - when: { mapPrefix: "aim_" }
+    settings:
+      rules:
+        freezeTime: 0
+        roundTime: 1
+        startMoney: 16000
+      bots:
+        quota: 0
+
+  - when: { map: aim_map }
+    settings:
+      rules:
+        roundTime: 1.5            # beats the aim_ prefix's 1 minute
+
+  - when: { map: cs_office }
+    settings:
+      rules:
+        roundTime: 3              # hostage maps get longer rounds

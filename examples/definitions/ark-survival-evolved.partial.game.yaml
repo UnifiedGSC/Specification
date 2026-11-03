@@ -1,0 +1,126 @@
+# =============================================================================
+# ARK: Survival Evolved — PARTIAL reference definition (Game.ini only)
+# Game Server Config Standard (GSC), draft v0.1
+#
+# An excerpt, not a full game definition. It exists to test REPEATED KEYS:
+# Game.ini expresses lists by repeating the same key on many lines, and some of
+# those lines hold Unreal struct values with nested structs inside.
+#
+#   [/script/shootergame.shootergamemode]
+#   ConfigOverrideItemMaxQuantity=(ItemClassString="PrimalItemResource_Stone_C",Quantity=(MaxItemQuantity=1000,bIgnoreMultiplier=True))
+#   OverridePlayerLevelEngramPoints=8      <- level 1
+#   OverridePlayerLevelEngramPoints=8      <- level 2
+#   ...                                    <- one line per level, last in the file
+#
+# New format features:
+#   - `repeat: true` on a write: one line per array item, same key; GSC owns
+#     every line of that key and replaces them all on each write
+#   - `itemFormat` + `shape`: each repeated line's value is a ue-struct whose
+#     nested layout differs from the flat item the UI edits
+#   - `placement: end`: keep these lines last in the file
+#
+# Source for engram points: Nodecraft "Changing engram points earned per level".
+# The ConfigOverrideItemMaxQuantity syntax is from memory.   # verify
+# =============================================================================
+
+spec: gsc/v0.1
+kind: GameDefinition
+
+# Identity for registries: publisher/name, a semantic version, and a license.
+definition:
+  id: gsc-examples/ark-survival-evolved
+  version: 0.1.0
+  license: CC0-1.0                 # definitions are data; a permissive license lets any panel ship them
+  authors: [GSC draft examples]
+  status: partial                 # covers one feature, not the whole game
+partial: true                         # excerpt: not a complete definition of the game
+
+game:
+  id: ark-survival-evolved
+  name: "ARK: Survival Evolved"
+  engine: unreal-4
+  platforms: [linux, windows]
+
+paths:
+  config:
+    default:
+      linux:   "{installDir}/ShooterGame/Saved/Config/LinuxServer"
+      windows: "{installDir}\\ShooterGame\\Saved\\Config\\WindowsServer"
+
+console: none                          # excerpt only; ARK has RCON, not modeled here
+
+targets:
+  gameIni:
+    type: file
+    path: "{paths.config}/Game.ini"
+    format: ini
+    writeWhen: stopped                 # verify: whether ARK rewrites Game.ini as it does GameUserSettings.ini
+
+settings:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+
+    progression:
+      title: Progression
+      type: object
+      properties:
+        engramPointsPerLevel:
+          title: Engram points per level
+          description: >-
+            One entry per player level, in order: the first is the points gained
+            on reaching level 1. Every level must be listed.
+          type: array
+          items: { type: integer, minimum: 0 }
+          ui: { widget: orderedList, indexLabel: "Level {index1}" }
+          default: []                  # empty = no lines written; the game uses its own table
+          apply: restart
+          write:
+            - target: gameIni
+              section: "/script/shootergame.shootergamemode"
+              key: OverridePlayerLevelEngramPoints
+              repeat: true
+              placement: end           # the list must be the last thing in the file
+
+    items:
+      title: Items
+      type: object
+      properties:
+        maxStackOverrides:
+          title: Stack size overrides
+          type: array
+          items:
+            type: object
+            required: [itemClass, maxQuantity]
+            properties:
+              itemClass:
+                title: Item class
+                type: string
+                pattern: '^[A-Za-z0-9_]+_C$'
+                examples: [PrimalItemResource_Stone_C]
+              maxQuantity:
+                title: Max stack size
+                type: integer
+                minimum: 1
+              ignoreMultiplier:
+                title: Ignore the server's stack multiplier
+                type: boolean
+                default: true
+          default: []
+          apply: restart
+          write:
+            - target: gameIni
+              section: "/script/shootergame.shootergamemode"
+              key: ConfigOverrideItemMaxQuantity
+              repeat: true
+              itemFormat: ue-struct
+              # Where each flat UI field goes in the nested struct, and how it encodes
+              shape:
+                ItemClassString: { from: itemClass, as: string }
+                Quantity:
+                  MaxItemQuantity:   { from: maxQuantity }
+                  bIgnoreMultiplier: { from: ignoreMultiplier }
+
+rules:
+  - rule: "self.items.maxStackOverrides.all(o, self.items.maxStackOverrides.exists_one(p, p.itemClass == o.itemClass))"
+    message: "Each item class may only be overridden once."

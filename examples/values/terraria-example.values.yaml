@@ -1,0 +1,18 @@
+spec: gsc/v0.1
+kind: ServerValues
+game: terraria
+definitionId: gsc-examples/terraria
+definitionVersion: 0.1.0
+id: terra-friends
+profile: interactive
+settings:
+  world:
+    name: Pals Island
+    size: 3
+    difficulty: 2
+  general:
+    maxPlayers: 12
+    password: { $secret: general.password }
+    motd: "Welcome to Pals Island!"
+  network:
+    forwardPort: false

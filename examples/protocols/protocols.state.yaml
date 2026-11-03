@@ -1,0 +1,114 @@
+# =============================================================================
+# GSC live state: protocol library
+#
+# One entry per query protocol, keyed by the protocol IDs that game
+# definitions already use in `ports.<name>.speaks`. Adapters implement the
+# wire format once per protocol; this file says how each protocol's fields map
+# onto the ServerState vocabulary, so every game that speaks A2S gets players,
+# map and version without game-specific work.
+#
+# Wire details marked `# verify` are from memory.
+# =============================================================================
+
+spec: gsc-state/v0.1
+kind: ProtocolLibrary
+
+protocols:
+
+  steam-a2s:
+    title: Steam server query (A2S)
+    transport: udp
+    usedBy: [Source and GoldSrc games, many Unity and Unreal games that use Steam's server API]
+    requests:
+      info:
+        send: "FFFFFFFF 54 'Source Engine Query' 00"
+        challenge: { response: 0x41, resendWith: appendChallenge }   # since late 2020   # verify
+        reply: 0x49
+      players:
+        send: "FFFFFFFF 55 {challenge:-1}"
+        challenge: { response: 0x41, resendWith: replaceChallenge }
+        reply: 0x44
+      rules:
+        send: "FFFFFFFF 56 {challenge:-1}"
+        optional: true                 # many games disable or truncate it
+    fields:                            # protocol field -> ServerState path
+      info.name:        session.name
+      info.map:         session.map
+      info.folder:      game.folder
+      info.game:        game.description      # e.g. "Counter-Strike: Source"; not the game mode
+      info.players:     players.online
+      info.maxPlayers:  players.max
+      info.bots:        players.bots
+      info.visibility:  session.passwordProtected
+      info.version:     game.version
+      info.keywords:    session.tags
+      players[].name:     players.list[].name
+      players[].score:    players.list[].score
+      players[].duration: players.list[].connectedSeconds
+    limits:
+      - "player names may be empty while a player is still connecting"
+      - "players[] carries no Steam IDs; identities come from the console or logs"
+
+  minecraft-slp:
+    title: Minecraft server list ping
+    transport: tcp
+    requests:
+      status:
+        send: "handshake(protocol=-1, host, port, nextState=1) + statusRequest"
+        reply: json
+    fields:
+      version.name:         game.version
+      version.protocol:     game.protocol
+      players.online:       players.online
+      players.max:          players.max
+      players.sample[].name: players.list[].name
+      players.sample[].id:   players.list[].ids.uuid
+      description:          session.name          # a chat component or a string; flattened to text
+    limits:
+      - "players.sample is a sample (up to 12), and servers may hide it or fill it with text"   # verify
+
+  minecraft-query:
+    title: Minecraft GameSpy4 query (enable-query)
+    transport: udp
+    requests:
+      fullStat: { send: "FEFD 09 session; FEFD 00 session challenge padding", reply: kv+players }   # verify
+    fields:
+      hostname:   session.name
+      map:        session.map
+      numplayers: players.online
+      maxplayers: players.max
+      version:    game.version
+      players[]:  players.list[].name
+      plugins:    content.plugins
+
+  quake3-query:
+    title: Quake 3 getstatus
+    transport: udp
+    requests:
+      status: { send: "FFFFFFFF 'getstatus\n'", reply: "FFFFFFFF 'statusResponse\n' \\key\\value... \n score ping \"name\" ..." }
+    fields:
+      sv_hostname:   session.name
+      mapname:       session.map
+      g_gametype:    session.mode
+      sv_maxclients: players.max
+      g_needpass:    session.passwordProtected
+      version:       game.version
+      players[].name:  players.list[].name
+      players[].score: players.list[].score
+      players[].ping:  players.list[].ping
+    reportsSettings: true            # the info string carries server cvars: usable for drift
+
+  satisfactory-https-api:
+    title: Satisfactory HTTPS API (QueryServerState)
+    transport: https
+    requests:
+      state: { call: QueryServerState, reply: "data.serverGameState" }   # verify field names
+    fields:
+      serverGameState.activeSessionName:     session.name
+      serverGameState.numConnectedPlayers:   players.online
+      serverGameState.playerLimit:           players.max
+      serverGameState.techTier:              session.progress.tier
+      serverGameState.isGameRunning:         lifecycle.ready
+      serverGameState.isGamePaused:          session.paused
+      serverGameState.averageTickRate:       performance.tickRate
+      serverGameState.totalGameDuration:     session.playedSeconds

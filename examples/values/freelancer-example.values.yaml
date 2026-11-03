@@ -1,0 +1,21 @@
+# A values document for one Freelancer server running under Wine.
+
+spec: gsc/v0.1
+kind: ServerValues
+game: freelancer
+definitionId: gsc-examples/freelancer
+definitionVersion: 0.1.0
+id: sirius-lan
+fragments: []
+
+settings:
+  general:
+    name: "Sirius LAN Night"
+    description: "Open world, no PvP. Characters are wiped monthly."
+    maxPlayers: 32
+  rules:
+    allowNewPlayers: true
+    pvp: false
+  runtime:
+    winePrefix: "/config/wineprefix"
+    wineUser: lancommander
